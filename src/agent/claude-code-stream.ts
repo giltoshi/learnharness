@@ -31,6 +31,8 @@ export const CLAUDE_CODE_PROVIDER = "claude-code";
 const MCP_SERVER = "lh";
 const MCP_PREFIX = `mcp__${MCP_SERVER}__`;
 const MAX_ANCHORS = 500;
+/** The app's prompts name tools bare; Claude Code only exposes them prefixed, and rejects a bare call (live run 2026-10-27). */
+const TOOL_PREFIX_NOTE = `Tool names: every tool is exposed as ${MCP_PREFIX}<name>. When these instructions name a tool (for example probe_done), call it as ${MCP_PREFIX}probe_done.`;
 
 const ALIASES = [
 	["opus", "Claude Opus (subscription)"],
@@ -130,6 +132,20 @@ function zodShape(parameters: unknown): Record<string, z.ZodType> {
 		return [name, required.has(name) ? type : type.optional()];
 	}));
 }
+/** Claude sometimes sends a nested object/array argument as its JSON text (live run 2026-10-27): parse it back when the schema expects one. */
+export function coerceArguments(args: Record<string, unknown>, parameters: unknown): Record<string, unknown> {
+	const props = (parameters as { properties?: Record<string, { type?: unknown }> } | undefined)?.properties ?? {};
+	const out = { ...args };
+	for (const [name, value] of Object.entries(out)) {
+		const type = props[name]?.type;
+		if (typeof value !== "string" || (type !== "object" && type !== "array")) continue;
+		try {
+			const parsed: unknown = JSON.parse(value);
+			if (type === "array" ? Array.isArray(parsed) : parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) out[name] = parsed;
+		} catch { /* not JSON: leave it for pi's validation to report */ }
+	}
+	return out;
+}
 function toolServer(tools: Tool[]): NonNullable<Options["mcpServers"]> {
 	if (!tools.length) return {};
 	return { [MCP_SERVER]: createSdkMcpServer({ name: MCP_SERVER, version: "1.0.0", tools: tools.map((t) => tool(t.name, t.description, zodShape(t.parameters),
@@ -174,11 +190,13 @@ export function claudeCodeStream(run: ClaudeCodeQuery = sdkQuery): StreamFunctio
 			const cwd = path.join(PATHS.data, "claude-code");
 			mkdirSync(cwd, { recursive: true });
 			const level = options?.reasoning;
+			const tools = getCurrentTools(messages);
+			const systemPrompt = getCurrentSystemPrompt(messages);
 			const sdkOptions: Options = {
 				model: model.id, cwd, env, abortController: abort,
-				systemPrompt: getCurrentSystemPrompt(messages),
+				systemPrompt: tools.length ? `${systemPrompt}\n\n${TOOL_PREFIX_NOTE}` : systemPrompt,
 				tools: [], settingSources: [], strictMcpConfig: true,
-				mcpServers: toolServer(getCurrentTools(messages)),
+				mcpServers: toolServer(tools),
 				includePartialMessages: true, persistSession: true, maxTurns: 3,
 				...(level ? { effort: level as Options["effort"] } : { thinking: { type: "disabled" } }),
 				...(native && anchor ? { resume: anchor.sessionId, resumeSessionAt: anchor.uuid, forkSession: true } : {}),
@@ -235,7 +253,7 @@ export function claudeCodeStream(run: ClaudeCodeQuery = sdkQuery): StreamFunctio
 					if (block.type === "text") output.push({ type: "text_end", contentIndex: at, content: block.text, partial: message });
 					else if (block.type === "thinking") output.push({ type: "thinking_end", contentIndex: at, content: block.thinking, partial: message });
 					else if (block.type === "toolCall") {
-						try { block.arguments = block.partialJson ? JSON.parse(block.partialJson) : {}; }
+						try { block.arguments = coerceArguments(block.partialJson ? JSON.parse(block.partialJson) : {}, tools.find((t) => t.name === block.name)?.parameters); }
 						catch { block.arguments = {}; block.argumentsError = `Arguments were not valid JSON: ${String(block.partialJson).slice(0, 200)}`; }
 						delete block.partialJson;
 						output.push({ type: "toolcall_end", contentIndex: at, toolCall: block as never, partial: message });

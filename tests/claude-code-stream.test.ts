@@ -7,7 +7,7 @@ import { normalizeContext, type AssistantMessage, type AssistantMessageEvent, ty
 import { Type } from "typebox";
 
 process.env.LH_DATA_DIR ??= mkdtempSync(path.join(os.tmpdir(), "lh-claude-code-"));
-const { claudeCodeModel, claudeCodeStream, resetClaudeCodeSessions } = await import("../src/agent/claude-code-stream.ts");
+const { claudeCodeModel, claudeCodeStream, coerceArguments, resetClaudeCodeSessions } = await import("../src/agent/claude-code-stream.ts");
 
 // A scripted stand-in for the SDK's query(): records each call and replays SDK messages.
 interface Call { prompt: any[]; options: any }
@@ -84,7 +84,7 @@ test("relays a tool_use un-executed, on the subscription, with Claude Code's own
 	assert.deepEqual(options.tools, []);
 	assert.deepEqual(options.settingSources, []);
 	assert.equal(options.strictMcpConfig, true);
-	assert.equal(options.systemPrompt, "You are a tutor.");
+	assert.equal(options.systemPrompt, "You are a tutor.\n\nTool names: every tool is exposed as mcp__lh__<name>. When these instructions name a tool (for example probe_done), call it as mcp__lh__probe_done.");
 	assert.equal(options.resume, undefined);
 	assert.deepEqual(options.thinking, { type: "disabled" });
 	assert.deepEqual(await options.canUseTool("mcp__lh__ask_learner", {}), { behavior: "deny", message: "Relayed to the host app; do not retry.", interrupt: true });
@@ -159,6 +159,21 @@ test("an interrupt mid-block is a failure, not a truncated success", async () =>
 	throwAfter = "Claude Code returned an error result: interrupted";
 	const last = (await run([user("Hi")])).at(-1)!;
 	assert.equal(last.type, "error");
+});
+
+test("an array argument sent as JSON text is parsed back; a string argument that looks like JSON is not", async () => {
+	// Live run 2026-10-27: probe_done.assessment arrived as a JSON string and failed pi's validation.
+	script = () => toolTurn("toolu_1", "uuid-1", { question: "[1, 2]", options: JSON.stringify(["10", "20"]) });
+	const message = final(await run([user("Hi")]));
+	assert.deepEqual(message.content.at(-1), { type: "toolCall", id: "toolu_1", name: "ask_learner", arguments: { question: "[1, 2]", options: ["10", "20"] } });
+});
+
+test("coerceArguments only parses into the type the schema declares", () => {
+	const schema = { type: "object", properties: { a: { type: "object" }, b: { type: "array" }, c: { type: "string" } } };
+	assert.deepEqual(coerceArguments({ a: '{"x":1}', b: "[1]", c: '{"y":2}' }, schema), { a: { x: 1 }, b: [1], c: '{"y":2}' });
+	assert.deepEqual(coerceArguments({ a: "[1]", b: '{"x":1}' }, schema), { a: "[1]", b: '{"x":1}' }, "wrong shape is left for pi to reject");
+	assert.deepEqual(coerceArguments({ a: "not json" }, schema), { a: "not json" });
+	assert.deepEqual(coerceArguments({ a: '{"x":1}' }, undefined), { a: '{"x":1}' }, "unknown tool: untouched");
 });
 
 test("streams text deltas as they arrive", async () => {
