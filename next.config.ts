@@ -96,6 +96,11 @@ const nextConfig: NextConfig = {
 			"node_modules/gcp-metadata/**/*",
 			"node_modules/json-bigint/**/*",
 			"node_modules/bignumber.js/**/*",
+			// The Claude subscription engine spawns its bundled CLI: a per-platform
+			// optional dep (claude-agent-sdk-<platform>-<arch>) the tracer cannot
+			// see. One binary per build, like the canvas above.
+			"node_modules/@anthropic-ai/claude-agent-sdk/**/*",
+			"node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
 		],
 	},
 	// Framework-free core lives in src/ (plain TS, imported by routes and CLI alike).
@@ -107,6 +112,7 @@ const nextConfig: NextConfig = {
 		"pdfjs-dist", // sources v0: bundling breaks its node fake-worker path
 		"@napi-rs/canvas", // native binding — bundling breaks the .node require
 		"@resvg/resvg-js", // native binding — same
+		"@anthropic-ai/claude-agent-sdk", // resolves its CLI binary relative to itself
 	],
 };
 
