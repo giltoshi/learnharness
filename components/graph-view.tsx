@@ -1419,10 +1419,16 @@ export function GraphView({
 				// Live physics settled: persist the new rest state. Fire-and-
 				// forget — the next snapshot fetch carries the ledger anyway.
 				onCommit: (positions) => {
+					const payload = commitPayload(positions, posRef.current, isGroupNodeId);
+					// posRef must track the committed rest state: collapse/expand
+					// re-feeds the renderer from it, and hidden members' frozen
+					// positions come from it (else dragged nodes snap back).
+					const frozen = posRef.current;
+					if (frozen) for (const [id, p] of Object.entries(payload)) frozen.set(id, { x: p.x, y: p.y });
 					void fetch("/api/graph/positions", {
 						method: "PUT",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(commitPayload(positions, posRef.current, isGroupNodeId)),
+						body: JSON.stringify(payload),
 					}).catch((err) => console.error("[graph] positions commit failed", err));
 				},
 			},
