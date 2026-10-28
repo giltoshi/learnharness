@@ -81,11 +81,41 @@ describe("startCliTurn", () => {
 		assert.ok(t.chats.get(chatId)!.messages[1]!.parts.some((p) => p.type === "error"));
 	});
 	it("cancelling the stream mid-turn frees the chat even if the runner never yields again", async () => {
-		const t = setup(() => (async function* () { await new Promise(() => {}); })());
+		let chatId = "";
+		const t = setup((o) => (async function* () {
+			void t.broker.request(chatId, { tool: "x", title: "t", lines: [] }, t.registry.get(o.mcpUrl.split("/").pop()!)!.emit);
+			await new Promise(() => {});
+		})());
+		const chat = t.chats.create();
+		chatId = chat.id;
+		const out = startCliTurn(t.deps, chat.id, "a", "http://h") as ReadableStream<Uint8Array>;
+		await new Promise((r) => setTimeout(r, 10));
+		assert.equal(t.broker.pendingCount(chat.id), 1, "approval pending before cancel");
+		await out.cancel();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(t.chats.get(chat.id)!.messages.length, 2, "user + assistant persisted exactly once");
+		assert.equal(t.broker.pendingCount(chat.id), 0, "pending approvals rejected");
+		assert.ok(t.registry.begin(chat.id) !== null, "chat is free after cancel");
+	});
+	it("a runner error after cancel is not persisted as an error part", async () => {
+		const t = setup((o) => (async function* () {
+			await new Promise<void>((resolve) => o.signal.addEventListener("abort", () => resolve(), { once: true }));
+			throw new Error("AbortError: killed");
+		})());
 		const chat = t.chats.create();
 		const out = startCliTurn(t.deps, chat.id, "a", "http://h") as ReadableStream<Uint8Array>;
 		await out.cancel();
 		await new Promise((r) => setTimeout(r, 20));
-		assert.ok(t.registry.begin(chat.id) !== null, "chat is free after cancel");
+		const saved = t.chats.get(chat.id)!;
+		assert.equal(saved.messages.length, 2);
+		assert.ok(!saved.messages[1]!.parts.some((p) => p.type === "error"));
+	});
+	it("a throwing chats.save still ends the stream, with an error event", async () => {
+		const t = setup([{ type: "text", delta: "hi" }]);
+		const chat = t.chats.create();
+		const deps: CliTurnDeps = { ...t.deps, chats: { ...t.chats, get: t.chats.get, save: () => { throw new Error("disk full"); } } as CliTurnDeps["chats"] };
+		const events = await drain(startCliTurn(deps, chat.id, "hi", "http://h") as ReadableStream<Uint8Array>);
+		const err = events.find((e) => e.type === "error") as { message: string } | undefined;
+		assert.ok(err && err.message === "Could not save this chat: disk full");
 	});
 });

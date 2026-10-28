@@ -77,8 +77,12 @@ export async function handleCliMcp(token: string, body: unknown): Promise<Record
 		deleteChats: async (ids, mode) => {
 			const out = [];
 			for (const id of ids) {
-				const r = await deleteChatSession(id, mode);
-				out.push({ id, ok: r.ok, message: r.ok ? `deleted (${r.stats.nodesRemoved} nodes, ${r.stats.chainsRemoved} chains removed)` : r.error });
+				try {
+					const r = await deleteChatSession(id, mode);
+					out.push({ id, ok: r.ok, message: r.ok ? `deleted (${r.stats.nodesRemoved} nodes, ${r.stats.chainsRemoved} chains removed)` : r.error });
+				} catch (err) {
+					out.push({ id, ok: false, message: err instanceof Error ? err.message : String(err) });
+				}
 			}
 			return out;
 		},
