@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { displayCostTotals, isNodeVisible } from "../components/graph-view.tsx";
+import { commitPayload, displayCostTotals, isNodeVisible } from "../components/graph-view.tsx";
 
 const node = {
 	name: "Money multiplier",
@@ -65,5 +65,17 @@ describe("displayCostTotals (naming-free cost fold)", () => {
 
 	it("unpriced counts fold the same two stages", () => {
 		assert.equal(displayCostTotals(costs).unpricedRuns, 1);
+	});
+});
+
+describe("commitPayload (full positions while a group is collapsed)", () => {
+	const isG = (id: string) => id.startsWith("group:");
+	it("fills hidden ids from frozen, renderer wins, group ids dropped", () => {
+		const frozen = new Map([["a", { x: 1, y: 1 }], ["b", { x: 2, y: 2 }], ["c", { x: 3, y: 3 }]]);
+		const out = commitPayload({ a: { x: 9, y: 9 }, "group:g": { x: 5, y: 5 } }, frozen, isG);
+		assert.deepEqual(out, { a: { x: 9, y: 9 }, b: { x: 2, y: 2 }, c: { x: 3, y: 3 } });
+	});
+	it("tolerates no frozen map", () => {
+		assert.deepEqual(commitPayload({ a: { x: 1, y: 2 } }, null, isG), { a: { x: 1, y: 2 } });
 	});
 });

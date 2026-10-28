@@ -147,6 +147,22 @@ export function isNodeVisible(node: Pick<GraphNode, "name" | "statement">, query
  *  label itself goes through the renderer's label-only channel
  *  (setClusterLabels). Exported for tests; pure display state only —
  *  the server derives the same join on its next read. */
+/** The positions PUT after a sim rest. While a group is collapsed the
+ *  renderer only knows the blob, not the hidden members, and the server
+ *  re-settles the whole layout when known ids are missing from a commit
+ *  (commit-positions.ts). So hidden ids keep their last frozen position
+ *  (they never moved), the renderer's positions win, and blob ids drop. */
+export function commitPayload(
+	rendererPositions: Record<string, { x: number; y: number }>,
+	frozen: ReadonlyMap<string, { x: number; y: number }> | null,
+	isGroupId: (id: string) => boolean,
+): Record<string, { x: number; y: number }> {
+	const out: Record<string, { x: number; y: number }> = {};
+	if (frozen) for (const [id, p] of frozen) if (!isGroupId(id)) out[id] = { x: p.x, y: p.y };
+	for (const [id, p] of Object.entries(rendererPositions)) if (!isGroupId(id)) out[id] = p;
+	return out;
+}
+
 export function renameSessionsPatch(snapshot: Pick<GraphSnapshot, "sessions">, id: string, title: string): void {
 	snapshot.sessions[id] = title;
 }
@@ -1383,7 +1399,7 @@ export function GraphView({
 				// at the pointer. The name comes from the snapshot — what the
 				// canvas shows is what the menu and dialog speak.
 				onContext: (nodeId, pos) => {
-					if (nodeId === null) {
+					if (nodeId === null || isGroupNodeId(nodeId)) {
 						setCtxNode(null);
 						return;
 					}
@@ -1406,7 +1422,7 @@ export function GraphView({
 					void fetch("/api/graph/positions", {
 						method: "PUT",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(positions),
+						body: JSON.stringify(commitPayload(positions, posRef.current, isGroupNodeId)),
 					}).catch((err) => console.error("[graph] positions commit failed", err));
 				},
 			},
@@ -1452,6 +1468,10 @@ export function GraphView({
 			(id) => positions.get(id) ?? { x: 0, y: 0 },
 		);
 		blobIdsRef.current = new Set(projection.blobIds);
+		// Collapsing a group hides its members: a card/menu open on one is stale.
+		const projected = new Set(projection.nodes.map((n) => n.id));
+		setSelected((sel) => (sel && !projected.has(sel.node.id) ? null : sel));
+		setCtxNode((c) => (c && !projected.has(c.id) ? null : c));
 		renderer.setData({
 			nodes: projection.nodes,
 			edges: projection.edges,
