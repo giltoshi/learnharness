@@ -104,6 +104,22 @@ export interface NotesSource {
 	extractions?: ExtractionRunUsage[];
 }
 
+/** One session group (data/graph/groups.json). Groups are METADATA ONLY:
+ *  they never touch the node or chain ledgers. */
+export interface GraphGroup {
+	id: string;
+	name: string;
+	/** Absent = a top-level group. */
+	parentGroupId?: string;
+}
+
+/** The whole groups file. `sessionGroups` maps a session id (a chat id or
+ *  a notes source id "src_…") to the ONE group it belongs to. */
+export interface GroupsState {
+	groups: GraphGroup[];
+	sessionGroups: Record<string, string>;
+}
+
 /** What one cluster-naming refresh did — the namer's ClusterRefreshStats,
  *  contract-shaped so the agent layer needs no contracts import.
  *  Structural twins stay interchangeable. */
@@ -119,8 +135,9 @@ export interface NamingRunStats {
 }
 
 /** The graph-family format version this build writes and understands
- *  (the format.json sidecar — src/store/graph-format.ts). */
-export const CURRENT_GRAPH_FORMAT_VERSION = 1;
+ *  (the format.json sidecar — src/store/graph-format.ts).
+ *  v2 (2026-10-27): adds groups.json (session groups). */
+export const CURRENT_GRAPH_FORMAT_VERSION = 2;
 
 
 export interface GraphNode {
