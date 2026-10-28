@@ -28,9 +28,11 @@
  * the one birth record.
  *
  * Browser-safe pure logic (no node builtins, no fs): same contract style
- * as the rest of the core graph derivation. Not re-exported through the
- * core barrel — the shell reads clusters from the snapshot; only the
- * server-side derivations (snapshot, settle) and tests import this.
+ * as the rest of the core graph derivation. Only the two pure helpers
+ * birthSessionOf and impClusterKey are re-exported through the core
+ * barrel, for the shell's group-collapse projection
+ * (components/group-projection.ts); everything else stays server-side
+ * (snapshot, settle, tests).
  */
 import type { GraphChain, GraphNode } from "./contracts.ts";
 

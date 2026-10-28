@@ -16,6 +16,7 @@
  */
 
 export * from "./contracts.ts";
+export { birthSessionOf, impClusterKey } from "./session-clusters.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
 export * from "./folder-groups.ts";
