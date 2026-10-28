@@ -3,6 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
 import type { ChatStore, GraphStore } from "../../core/ports.ts";
+import { sessionIdsInGroup } from "../../core/groups.ts";
 
 /**
  * THE PROBER'S GRAPH TOOLS (wave 7, owner-locked 2026-09-23): context
@@ -29,14 +30,57 @@ export interface GraphToolContext {
 	graphStore: GraphStore;
 }
 
-const listSessionsInput = Type.Object({});
+const listSessionsInput = Type.Object({
+	groupId: Type.Optional(Type.String({ description: "Only sessions in this group (subgroups included). Ids come from the group's owner; omit for all sessions." })),
+});
 
 const listPropositionsInput = Type.Object({
-	session: Type.String({
+	session: Type.Optional(Type.String({
 		minLength: 1,
-		description: "The session's id exactly as list_sessions reported it (a chat id or a notes source id)",
-	}),
+		description: "The session's id exactly as list_sessions reported it (a chat id or a notes source id). Give this OR groupId.",
+	})),
+	groupId: Type.Optional(Type.String({ description: "A group id: lists the propositions born in every session in the group (subgroups included). Give this OR session." })),
 });
+
+/** Resolve a list_propositions request to the session ids it covers, or an error line. */
+function sessionsFor(
+	deps: { graphStore: GraphStore },
+	input: { session?: string; groupId?: string },
+): { ids: string[] } | { error: string } {
+	if ((input.session === undefined) === (input.groupId === undefined)) {
+		return { error: "Give exactly one of session or groupId." };
+	}
+	if (input.session !== undefined) return { ids: [input.session] };
+	const groups = deps.graphStore.readGroups();
+	if (!groups.groups.some((g) => g.id === input.groupId)) return { error: `No group "${input.groupId}".` };
+	return { ids: sessionIdsInGroup(groups, input.groupId!) };
+}
+
+/** The group piece of a session line (before the id, so the id stays last); empty when ungrouped. */
+const groupPiece = (s: { groupName: string | null }): string => (s.groupName ? ` — group: ${s.groupName}` : "");
+
+type Deps = { chatStore: ChatStore; graphStore: GraphStore };
+
+/** The group listing both tools share: per-session blocks of `linesFor(propositions)`. */
+function groupListing(
+	deps: Deps,
+	groupId: string,
+	ids: string[],
+	linesFor: (propositions: ReturnType<typeof graphSessionPropositions>) => string,
+): string {
+	if (ids.length === 0) return `No sessions in group "${groupId}".`;
+	const names = new Map(graphSessionIndex(deps).map((s) => [s.id, s.name]));
+	let total = 0;
+	const blocks: string[] = [];
+	for (const id of ids) {
+		const propositions = graphSessionPropositions(deps, id);
+		if (propositions.length === 0) continue;
+		total += propositions.length;
+		blocks.push(`Session ${names.get(id) ?? id} (id: ${id}):\n${linesFor(propositions)}`);
+	}
+	if (blocks.length === 0) return `No propositions born in any session of group "${groupId}".`;
+	return `${total} proposition(s) across ${blocks.length} session(s) in this group:\n${blocks.join("\n\n")}`;
+}
 
 export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentTool<any>> {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
@@ -47,14 +91,16 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 			description:
 				"List the sessions of the learner's persistent knowledge graph — every chat or imported-notes file that ever contributed a proposition, most recent first. The map is organized into birth-session clusters (propositions grouped by the session they were first learned in), and session names are those clusters' labels. " +
 				"Each line: the session's name, kind (chat/file), how many propositions were born in it, its dates, and its id — use that id with list_propositions. " +
-				"Reading this first shows what he has already covered and when, before you probe anything.",
+				"Reading this first shows what he has already covered and when, before you probe anything. " +
+				"A session that sits in a group shows the group's name; pass groupId to list only that group's sessions (subgroups included).",
 			parameters: listSessionsInput,
-			execute: serverExecute("list_sessions", listSessionsInput, async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+			execute: serverExecute("list_sessions", listSessionsInput, async ({ groupId }): Promise<string> => {
+				const sessions = graphSessionIndex(deps, { groupId });
+				if (sessions.length === 0 && groupId !== undefined) return `No sessions in group "${groupId}".`;
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
 				const lines = sessions.map((s, i) =>
 					`${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}, ` +
-					`born ${s.createdAt ?? "unknown date"}${s.updatedAt ? `, last active ${s.updatedAt}` : ""}) — id: ${s.id}`,
+					`born ${s.createdAt ?? "unknown date"}${s.updatedAt ? `, last active ${s.updatedAt}` : ""})${groupPiece(s)} — id: ${s.id}`,
 				);
 				return `${sessions.length} session(s) in the knowledge graph, most recent first:\n${lines.join("\n")}`;
 			}),
@@ -63,16 +109,19 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 			name: "list_propositions",
 			label: "list_propositions",
 			description:
-				"List the propositions BORN in one knowledge-graph session — what was covered there. " +
+				"List the propositions BORN in one knowledge-graph session — what was covered there — or, with groupId, in every session of a group (subgroups included). " +
 				"Names only — no statement text, no session contents (owner ruling 2026-09-23: the map's ORGANIZATION is your business, its prose is not).",
 			parameters: listPropositionsInput,
-			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
+			execute: serverExecute("list_propositions", listPropositionsInput, async (input): Promise<string> => {
+				const resolved = sessionsFor(deps, input);
+				if ("error" in resolved) return resolved.error;
+				const namesOnly = (ps: ReturnType<typeof graphSessionPropositions>) => ps.map((p) => `- ${p.name}`).join("\n");
+				if (input.session === undefined) return groupListing(deps, input.groupId!, resolved.ids, namesOnly);
+				const propositions = graphSessionPropositions(deps, input.session);
 				if (propositions.length === 0) {
-					return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
+					return `No propositions born in session "${input.session}". Call list_sessions for the current ids.`;
 				}
-				const lines = propositions.map((p) => `- ${p.name}`);
-				return `${propositions.length} proposition(s) covered in this session:\n${lines.join("\n")}`;
+				return `${propositions.length} proposition(s) covered in this session:\n${namesOnly(propositions)}`;
 			}),
 		},
 	};
@@ -151,12 +200,13 @@ export function auditorGraphTools(ctx: GraphToolContext): Record<string, AgentTo
 			label: "list_sessions",
 			description:
 				"List the knowledge graph's birth sessions — every chat or imported-notes file that ever contributed a proposition. " +
-				"Each line: name, kind, proposition count, id. Use the id with list_propositions to see what a session covered.",
-			parameters: Type.Object({}),
-			execute: serverExecute("list_sessions", Type.Object({}), async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+				"Each line: name, kind, proposition count, group (when it sits in one), id. Use the id with list_propositions to see what a session covered; pass groupId to list only that group's sessions (subgroups included).",
+			parameters: listSessionsInput,
+			execute: serverExecute("list_sessions", listSessionsInput, async ({ groupId }): Promise<string> => {
+				const sessions = graphSessionIndex(deps, { groupId });
+				if (sessions.length === 0 && groupId !== undefined) return `No sessions in group "${groupId}".`;
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
-				const lines = sessions.map((s, i) => `${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}) — id: ${s.id}`);
+				const lines = sessions.map((s, i) => `${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"})${groupPiece(s)} — id: ${s.id}`);
 				return `${sessions.length} session(s):\n${lines.join("\n")}`;
 			}),
 		},
@@ -164,18 +214,19 @@ export function auditorGraphTools(ctx: GraphToolContext): Record<string, AgentTo
 			name: "list_propositions",
 			label: "list_propositions",
 			description:
-				"List the propositions BORN in one session, with FULL statement text — the content-level view for identity work " +
+				"List the propositions BORN in one session (or, with groupId, in every session of a group, subgroups included), with FULL statement text — the content-level view for identity work " +
 				"(deciding whether a new proposition is really one of these).",
 			parameters: listPropositionsInput,
-			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
-				if (propositions.length === 0) return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
+			execute: serverExecute("list_propositions", listPropositionsInput, async (input): Promise<string> => {
+				const resolved = sessionsFor(deps, input);
+				if ("error" in resolved) return resolved.error;
 				const nodes = new Map(getGraph(deps.graphStore).nodes.map((n) => [n.id, n]));
-				const lines = propositions.map((p) => {
-					const node = nodes.get(p.nodeId);
-					return `- ${p.nodeId} :: ${p.name}\n  statement: ${node?.statement ?? "(unknown)"}`;
-				});
-				return `${propositions.length} proposition(s) born in this session:\n${lines.join("\n")}`;
+				const withStatements = (ps: ReturnType<typeof graphSessionPropositions>) =>
+					ps.map((p) => `- ${p.nodeId} :: ${p.name}\n  statement: ${nodes.get(p.nodeId)?.statement ?? "(unknown)"}`).join("\n");
+				if (input.session === undefined) return groupListing(deps, input.groupId!, resolved.ids, withStatements);
+				const propositions = graphSessionPropositions(deps, input.session);
+				if (propositions.length === 0) return `No propositions born in session "${input.session}". Call list_sessions for the current ids.`;
+				return `${propositions.length} proposition(s) born in this session:\n${withStatements(propositions)}`;
 			}),
 		},
 	};

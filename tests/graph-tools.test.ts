@@ -15,7 +15,7 @@ import { createProberTools } from "../src/agent/tools.ts";
 import { auditorGraphTools } from "../src/agent/tools/graph.ts";
 import type { ChatStore, GraphStore, JobStore } from "../src/core/ports.ts";
 import type { ChatSummary } from "../src/core/contracts/chat.ts";
-import type { GraphChain, GraphNode } from "../src/core/contracts/graph.ts";
+import type { GraphChain, GraphNode, GroupsState } from "../src/core/contracts/graph.ts";
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ function fakeStores(
 	nodes: GraphNode[],
 	over: {
 		chats?: Array<Pick<ChatSummary, "id" | "title" | "createdAt" | "updatedAt">>;
+		groups?: GroupsState;
 	} = {},
 ): { chatStore: ChatStore; graphStore: GraphStore } {
 	const chains: GraphChain[] = [];
@@ -47,7 +48,7 @@ function fakeStores(
 		readCoverage: () => [],
 		readSources: () => [],
 		readPositions: () => ({}),
-		readGroups: () => ({ groups: [], sessionGroups: {} }),
+		readGroups: () => over.groups ?? { groups: [], sessionGroups: {} },
 		writePositions: () => {},
 		readClusterLabels: () => [],
 		appendClusterLabel: () => {},
@@ -227,5 +228,110 @@ describe("auditor graph tools", () => {
 		assert.ok(!out.includes("2026-09"), "no dates in the auditor's view");
 		const miss = (await tools.list_propositions!.execute!("tc", { session: "no-such" })).details as string;
 		assert.equal(miss, 'No propositions born in session "no-such". Call list_sessions for the current ids.');
+	});
+});
+
+// ─── session groups (group filter + group label) ────────────────────────────
+
+describe("graph tools — session groups", () => {
+	// g1 "FINA 411" holds src_a directly and, via the subgroup g2 "Risk",
+	// src_c; src_b is ungrouped; g3 "Empty" has no sessions; g4 "Quiet" has
+	// a session that never birthed a proposition.
+	const groups: GroupsState = {
+		groups: [
+			{ id: "g1", name: "FINA 411" },
+			{ id: "g2", name: "Risk", parentGroupId: "g1" },
+			{ id: "g3", name: "Empty" },
+			{ id: "g4", name: "Quiet" },
+		],
+		sessionGroups: { src_a: "g1", src_c: "g2", src_quiet: "g4" },
+	};
+	const nodes = [
+		node("n1", "Time value of money", [pt("src_a")]),
+		node("n2", "Discounting", [pt("src_a")]),
+		node("n3", "Unsorted idea", [pt("src_b")]),
+		node("n4", "Value at risk", [pt("src_c")]),
+	];
+	const { chatStore, graphStore } = fakeStores(nodes, { groups });
+	const prober = () => createProberTools({ ...baseCtx, chatStore, graphStore });
+	const auditor = () => auditorGraphTools({ chatStore, graphStore });
+	const run = async (tools: Record<string, { execute?: (id: string, input: any) => Promise<{ details?: unknown }> }>, name: string, input: object) =>
+		(await tools[name]!.execute!("tc", input)).details as string;
+	const lineFor = (out: string, id: string) => out.split("\n").find((l) => l.includes(`id: ${id}`)) ?? "";
+
+	it("prober list_sessions shows each session's group (before the id) and filters by groupId", async () => {
+		const all = await run(prober(), "list_sessions", {});
+		assert.match(lineFor(all, "src_a"), /— group: FINA 411 — id: src_a$/);
+		assert.match(lineFor(all, "src_c"), /— group: FINA 411 \/ Risk — id: src_c$/);
+		assert.doesNotMatch(lineFor(all, "src_b"), /group:/);
+		assert.match(lineFor(all, "src_b"), /— id: src_b$/);
+
+		// Deep filter: g1 includes the subgroup's session, never the ungrouped one.
+		const filtered = await run(prober(), "list_sessions", { groupId: "g1" });
+		assert.match(filtered, /2 session\(s\) in the knowledge graph/);
+		assert.match(filtered, /id: src_a/);
+		assert.match(filtered, /id: src_c/);
+		assert.doesNotMatch(filtered, /src_b/);
+		assert.ok(!filtered.includes("statement of"));
+
+		const sub = await run(prober(), "list_sessions", { groupId: "g2" });
+		assert.match(sub, /id: src_c/);
+		assert.doesNotMatch(sub, /src_a/);
+
+		assert.equal(await run(prober(), "list_sessions", { groupId: "g3" }), 'No sessions in group "g3".');
+		assert.equal(await run(prober(), "list_sessions", { groupId: "nope" }), 'No sessions in group "nope".');
+	});
+
+	it("auditor list_sessions shows the group label (before the id) and filters by groupId", async () => {
+		const all = await run(auditor(), "list_sessions", {});
+		assert.match(lineFor(all, "src_a"), /\(file, 2 propositions\) — group: FINA 411 — id: src_a$/);
+		assert.match(lineFor(all, "src_b"), /\(file, 1 proposition\) — id: src_b$/);
+		const filtered = await run(auditor(), "list_sessions", { groupId: "g2" });
+		assert.match(filtered, /1 session\(s\):/);
+		assert.match(filtered, /id: src_c/);
+		assert.doesNotMatch(filtered, /src_a|src_b/);
+		assert.equal(await run(auditor(), "list_sessions", { groupId: "nope" }), 'No sessions in group "nope".');
+	});
+
+	it("prober list_propositions takes a groupId and lists every session in it, names only", async () => {
+		const out = await run(prober(), "list_propositions", { groupId: "g1" });
+		assert.match(out, /^3 proposition\(s\) across 2 session\(s\) in this group:/);
+		assert.match(out, /Session src_a \(id: src_a\):\n- Time value of money\n- Discounting/);
+		assert.match(out, /Session src_c \(id: src_c\):\n- Value at risk/);
+		// Sessions are separated by a blank line.
+		assert.match(out, /Discounting\n\nSession src_c/);
+		assert.doesNotMatch(out, /Unsorted idea/);
+		// The owner ruling holds for groups too: names only, never statements.
+		assert.ok(!out.includes("statement of"));
+	});
+
+	it("auditor list_propositions with a groupId carries the full statements per session", async () => {
+		const out = await run(auditor(), "list_propositions", { groupId: "g2" });
+		assert.match(out, /^1 proposition\(s\) across 1 session\(s\) in this group:/);
+		assert.match(out, /Session src_c \(id: src_c\):\n- n4 :: Value at risk\n  statement: statement of Value at risk/);
+		assert.doesNotMatch(out, /Unsorted idea/);
+	});
+
+	it("list_propositions group edge cases: no sessions, no propositions, unknown group", async () => {
+		for (const tools of [prober(), auditor()]) {
+			assert.equal(await run(tools, "list_propositions", { groupId: "g3" }), 'No sessions in group "g3".');
+			assert.equal(
+				await run(tools, "list_propositions", { groupId: "g4" }),
+				'No propositions born in any session of group "g4".',
+			);
+			assert.equal(await run(tools, "list_propositions", { groupId: "nope" }), 'No group "nope".');
+		}
+	});
+
+	it("list_propositions needs exactly one of session / groupId", async () => {
+		for (const tools of [prober(), auditor()]) {
+			assert.match(await run(tools, "list_propositions", {}), /exactly one of/);
+			assert.match(await run(tools, "list_propositions", { session: "src_a", groupId: "g1" }), /exactly one of/);
+		}
+	});
+
+	it("a single session is still listed exactly as before when groups exist", async () => {
+		const out = await run(prober(), "list_propositions", { session: "src_a" });
+		assert.equal(out, "2 proposition(s) covered in this session:\n- Time value of money\n- Discounting");
 	});
 });
