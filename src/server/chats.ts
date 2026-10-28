@@ -3,6 +3,7 @@ import { isJobLive } from "../agent/subagents/aborts.ts";
 import { coverageOf } from "../core/coverage.ts";
 import { deleteChatTraces, type ChatDeleteMode, type ChatDeletionStats } from "../core/graph-deletion.ts";
 import { titleFromPrompt } from "../core/contracts.ts";
+import { pruneSessionOp } from "../core/group-ops.ts";
 import { graphRevision } from "./graph.ts";
 import { stores } from "./stores.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
@@ -130,6 +131,7 @@ export async function deleteChatSession(chatId: string, mode: ChatDeleteMode): P
 		discardChatDeliveries(chatId);
 		clearTurnFailure(chatId);
 	}
+	pruneSessionOp(stores.graphStore, chatId);
 	return { ok: true, mode, stats, jobsRemoved, graphRevision: graphRevision() };
 }
 

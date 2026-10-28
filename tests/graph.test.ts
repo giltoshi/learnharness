@@ -824,6 +824,7 @@ describe("session deletion (deleteChatTraces + deleteChatSession, wave 6)", () =
 		// Success — a terminal job rides along; the chat record dies last.
 		const doneJob = jobStore.createJob({ kind: "research", chatId: dA.id, toolCallId: "del-call-2" });
 		jobStore.updateJob(doneJob.id, { status: "done", activity: "delivered" });
+		graphStore.writeGroups({ groups: [{ id: "grp_del", name: "Del" }], sessionGroups: { [dA.id]: "grp_del" } });
 		const outcome = await deleteChatSession(dA.id, "delete-nodes");
 		assert.equal(outcome.ok, true);
 		if (outcome.ok) {
@@ -832,6 +833,7 @@ describe("session deletion (deleteChatTraces + deleteChatSession, wave 6)", () =
 			assert.equal(outcome.jobsRemoved, 1);
 			assert.ok(outcome.graphRevision > 0, "the version stamp moved");
 		}
+		assert.equal(graphStore.readGroups().sessionGroups[dA.id], undefined, "the deleted chat left its group");
 		assert.equal(chatStore.getChat(dA.id), null, "the chat record is gone");
 		assert.doesNotMatch(await settledTurnResponse(dA.id).text(), /"type":"error"/, "deletion clears its transient notice");
 		assert.equal(jobStore.getJob(doneJob.id), null, "the chat's job records are gone");
