@@ -160,8 +160,10 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 					edit: { name, statement },
 				});
 				if (!decision.approved) return fail(REJECTED);
-				const finalName = decision.edit?.name.trim() || name;
-				const finalStatement = decision.edit?.statement.trim() || statement;
+				// The learner's edit is used verbatim; a blank field is an error, never a silent fallback.
+				const finalName = decision.edit ? decision.edit.name.trim() : name;
+				const finalStatement = decision.edit ? decision.edit.statement.trim() : statement;
+				if (finalName === "" || finalStatement === "") return fail("The edited name and statement must not be blank. Nothing was merged.");
 				const r = d.mergeNodes({ ids, name: finalName, statement: finalStatement });
 				if (!r.ok) return fail(r.error);
 				return ok(`Merged ${plural(r.value.nodesMerged, "node")} into ${r.value.newId} ("${finalName}"). ${plural(r.value.chainsRewritten, "chain")} rewritten, ${plural(r.value.chainsDropped, "chain")} dropped. The learner can undo this from the chat.`);

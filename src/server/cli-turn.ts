@@ -96,7 +96,7 @@ export function startCliTurn(deps: CliTurnDeps, chatId: string, text: string, or
 				deps.registry.end(entry.token);
 				try {
 					deps.chats.save(chatId, { messages: [...chat.messages, userMsg, assistant], ...(sessionId ? { cliSessionId: sessionId } : {}) });
-					if (chat.title === DEFAULT_CLI_TITLE) deps.chats.rename(chatId, text.trim().replace(/\s+/g, " ").slice(0, 60) || DEFAULT_CLI_TITLE);
+					if (deps.chats.get(chatId)?.title === DEFAULT_CLI_TITLE) deps.chats.rename(chatId, text.trim().replace(/\s+/g, " ").slice(0, 60) || DEFAULT_CLI_TITLE);
 				} catch (err) {
 					send({ type: "error", message: `Could not save this chat: ${err instanceof Error ? err.message : String(err)}` });
 				}

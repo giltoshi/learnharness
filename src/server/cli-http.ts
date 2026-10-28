@@ -14,5 +14,6 @@ export function parseApprovalBody(body: unknown): { ok: true; decision: CliAppro
 	if (body.edit === undefined) return { ok: true, decision: { approved: true } };
 	const e = body.edit;
 	if (!isRecord(e) || typeof e.name !== "string" || typeof e.statement !== "string") return { ok: false, error: "edit needs string name and statement" };
+	if (e.name.trim() === "" || e.statement.trim() === "") return { ok: false, error: "edit name and statement must not be blank" };
 	return { ok: true, decision: { approved: true, edit: { name: e.name, statement: e.statement } } };
 }

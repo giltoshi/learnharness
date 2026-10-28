@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { desktopAPIAuthorized } from "../src/server/desktop-access.ts";
 import { buildCliArgs } from "../src/agent/cli/args.ts";
 import { resolveClaudeBin, runCliTurn, type CliProc, type SpawnProc } from "../src/agent/cli/runner.ts";
 
@@ -141,5 +142,42 @@ describe("runCliTurn", () => {
 		await assert.rejects(collect(runCliTurn({ ...base, spawnProc: spawn, signal: ac.signal })), /pipe broke/);
 		assert.equal(added, 1);
 		assert.equal(removed, 1);
+	});
+});
+
+describe("runCliTurn desktop auth and env scrub", () => {
+	const SECRET = "s".repeat(64);
+	const SCRUBBED = ["ANTHROPIC_API_KEY", "LH_DESKTOP_API_SECRET", "LH_DESKTOP_SERVER", "ELECTRON_RUN_AS_NODE", "LH_AUTH_FILE", "LH_DEV_URL"];
+	async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>) {
+		const saved: Record<string, string | undefined> = {};
+		for (const k of Object.keys(vars)) { saved[k] = process.env[k]; if (vars[k] === undefined) delete process.env[k]; else process.env[k] = vars[k]; }
+		try { await fn(); } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
+	}
+	it("carries the desktop header in the MCP config when LH_DESKTOP_API_SECRET is set, and the server accepts it", async () => {
+		await withEnv({ LH_DESKTOP_API_SECRET: SECRET, LH_DESKTOP_SERVER: "1" }, async () => {
+			const { spawn, seen } = fakeProc([]);
+			await collect(runCliTurn({ ...base, spawnProc: spawn }));
+			const cfg = JSON.parse(seen.cfg);
+			assert.deepEqual(cfg.mcpServers.lh, { type: "http", url: base.mcpUrl, headers: { "x-learnharness-desktop": SECRET } });
+			assert.equal(desktopAPIAuthorized(new Headers(cfg.mcpServers.lh.headers), { LH_DESKTOP_API_SECRET: SECRET, LH_DESKTOP_SERVER: "1" }), true);
+			assert.equal(desktopAPIAuthorized(new Headers(), { LH_DESKTOP_API_SECRET: SECRET, LH_DESKTOP_SERVER: "1" }), false);
+		});
+	});
+	it("has no headers key when the secret is unset", async () => {
+		await withEnv({ LH_DESKTOP_API_SECRET: undefined }, async () => {
+			const { spawn, seen } = fakeProc([]);
+			await collect(runCliTurn({ ...base, spawnProc: spawn }));
+			assert.ok(!("headers" in JSON.parse(seen.cfg).mcpServers.lh));
+		});
+	});
+	it("scrubs secrets and desktop-only vars from the child env", async () => {
+		const vars: Record<string, string> = {};
+		for (const k of SCRUBBED) vars[k] = k === "LH_DESKTOP_API_SECRET" ? SECRET : "x";
+		await withEnv(vars, async () => {
+			const { spawn, seen } = fakeProc([]);
+			await collect(runCliTurn({ ...base, spawnProc: spawn }));
+			for (const k of SCRUBBED) assert.equal(seen.env[k], undefined, k);
+			assert.equal(seen.env.MCP_TOOL_TIMEOUT, "600000");
+		});
 	});
 });

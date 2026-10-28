@@ -94,6 +94,14 @@ function defaultWhere(): string[] {
 	}
 }
 
+/** Header the packaged desktop server requires on every /api request. Keep in sync with
+ *  desktopAPIAuthorized in src/server/desktop-access.ts (the agent layer cannot import src/server). */
+const DESKTOP_HEADER = "x-learnharness-desktop";
+/** Never inherited by the CLI child: it bills the API (ANTHROPIC_API_KEY) or would hand the
+ *  child the app's desktop capability / Electron identity. Mirrors browserServiceSpawnEnv in
+ *  src/agent/subagents/headless.ts, plus the auth-file path and the API key. */
+const SCRUBBED_ENV = ["ANTHROPIC_API_KEY", "LH_DESKTOP_API_SECRET", "LH_DESKTOP_SERVER", "ELECTRON_RUN_AS_NODE", "LH_DEV_URL", "LH_AUTH_FILE"];
+
 const NOT_FOUND = "Claude CLI not found. Install it from https://claude.com/claude-code, run `claude` once to sign in, then try again.";
 
 export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEvent> {
@@ -105,11 +113,14 @@ export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEv
 	try {
 		const mcpConfigPath = path.join(tmp, "mcp.json");
 		const systemPromptPath = path.join(tmp, "system.md");
-		fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: { type: "http", url: o.mcpUrl } } }));
+		// Captured BEFORE the env scrub: the MCP call must prove itself to the desktop server.
+		const desktopSecret = process.env.LH_DESKTOP_API_SECRET;
+		const server = { type: "http", url: o.mcpUrl, ...(desktopSecret ? { headers: { [DESKTOP_HEADER]: desktopSecret } } : {}) };
+		fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: server } }));
 		fs.writeFileSync(systemPromptPath, CLI_SYSTEM_PROMPT);
 
 		const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: "600000" };
-		delete env.ANTHROPIC_API_KEY;
+		for (const k of SCRUBBED_ENV) delete env[k];
 
 		proc = (o.spawnProc ?? spawnProc)(o.bin ?? claudeBin(), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
 		void proc.exit.then(() => { exited = true; }, () => { exited = true; });

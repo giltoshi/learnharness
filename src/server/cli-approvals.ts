@@ -10,16 +10,22 @@ import type { CliApprovalDecision, CliApprovalRequest, CliWireEvent } from "../c
 interface Pending {
 	chatId: string;
 	resolve(d: CliApprovalDecision): void;
+	timer?: ReturnType<typeof setTimeout>;
 	emit(e: CliWireEvent): void;
 }
 
-export function createApprovalBroker(newId: () => string = () => randomUUID()) {
+/** Just under the CLI's 600 s MCP tool timeout: after that Claude has been told the call failed. */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 9 * 60_000;
+
+export function createApprovalBroker(newId: () => string = () => randomUUID(), options: { timeoutMs?: number } = {}) {
+	const timeoutMs = options.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
 	const pending = new Map<string, Pending>();
 
 	function settle(id: string, decision: CliApprovalDecision): void {
 		const p = pending.get(id);
 		if (!p) return;
 		pending.delete(id);
+		if (p.timer) clearTimeout(p.timer);
 		p.emit({ type: "approval-settled", id, approved: decision.approved });
 		p.resolve(decision);
 	}
@@ -28,7 +34,10 @@ export function createApprovalBroker(newId: () => string = () => randomUUID()) {
 		request(chatId: string, req: CliApprovalRequest, emit: (e: CliWireEvent) => void): Promise<CliApprovalDecision> {
 			const id = newId();
 			return new Promise((resolve) => {
-				pending.set(id, { chatId, resolve, emit });
+				const entry: Pending = { chatId, resolve, emit };
+				entry.timer = setTimeout(() => settle(id, { approved: false }), timeoutMs);
+				entry.timer.unref?.();
+				pending.set(id, entry);
 				emit({ type: "approval", approval: { id, tool: req.tool, title: req.title, lines: req.lines, ...(req.edit ? { edit: req.edit } : {}), status: "pending" } });
 			});
 		},

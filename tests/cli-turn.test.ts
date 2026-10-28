@@ -118,4 +118,10 @@ describe("startCliTurn", () => {
 		const err = events.find((e) => e.type === "error") as { message: string } | undefined;
 		assert.ok(err && err.message === "Could not save this chat: disk full");
 	});
+	it("does not overwrite a title the learner changed during the turn", async () => {
+		const t = setup(async function* () { t.chats.rename(chatIdRef.id, "My own title"); yield { type: "text", delta: "x" }; });
+		const chatIdRef = t.chats.create();
+		await drain(startCliTurn(t.deps, chatIdRef.id, "first prompt", "http://127.0.0.1:3000") as ReadableStream<Uint8Array>);
+		assert.equal(t.chats.get(chatIdRef.id)!.title, "My own title");
+	});
 });

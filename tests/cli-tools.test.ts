@@ -179,12 +179,13 @@ describe("cli tools", () => {
 		assert.equal(calls.approvals.length, 0);
 		assert.equal(calls.chatDeletes.length, 0);
 	});
-	it("merge_nodes falls back to the proposed identity per blank edited field", async () => {
+	it("merge_nodes uses the learner's edit verbatim; a blank edited field is an error and merges nothing", async () => {
 		const a = setup({ approved: true, edit: { name: "  ", statement: "Edited statement" } });
-		await a.tools.get("merge_nodes")!.run({ ids: ["n_a", "n_b"], name: "Proposed", statement: "Proposed statement" });
-		assert.deepEqual(a.calls.merges, [{ ids: ["n_a", "n_b"], name: "Proposed", statement: "Edited statement" }]);
-		const b = setup({ approved: true, edit: { name: "Edited", statement: "" } });
+		const ra = await a.tools.get("merge_nodes")!.run({ ids: ["n_a", "n_b"], name: "Proposed", statement: "Proposed statement" });
+		assert.equal(ra.isError, true);
+		assert.deepEqual(a.calls.merges, []);
+		const b = setup({ approved: true, edit: { name: " Edited ", statement: " Stmt " } });
 		await b.tools.get("merge_nodes")!.run({ ids: ["n_a", "n_b"], name: "Proposed", statement: "Proposed statement" });
-		assert.deepEqual(b.calls.merges, [{ ids: ["n_a", "n_b"], name: "Edited", statement: "Proposed statement" }]);
+		assert.deepEqual(b.calls.merges, [{ ids: ["n_a", "n_b"], name: "Edited", statement: "Stmt" }]);
 	});
 });

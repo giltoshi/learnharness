@@ -48,3 +48,33 @@ describe("approval broker", () => {
 		assert.deepEqual(await p, { approved: false });
 	});
 });
+
+describe("approval expiry", () => {
+	const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+	it("auto-rejects after timeoutMs, emits settled, and a late decide returns false", async () => {
+		const events: CliWireEvent[] = [];
+		const broker = createApprovalBroker(() => "ap1", { timeoutMs: 20 });
+		const p = broker.request("chat1", req, (e) => events.push(e));
+		assert.deepEqual(await p, { approved: false });
+		assert.deepEqual(events[1], { type: "approval-settled", id: "ap1", approved: false });
+		assert.equal(broker.decide("chat1", "ap1", { approved: true }), false);
+		assert.equal(broker.pendingCount("chat1"), 0);
+	});
+	it("clears the timer when decided early (no double settle)", async () => {
+		const events: CliWireEvent[] = [];
+		const broker = createApprovalBroker(() => "ap1", { timeoutMs: 20 });
+		const p = broker.request("chat1", req, (e) => events.push(e));
+		broker.decide("chat1", "ap1", { approved: true });
+		assert.deepEqual(await p, { approved: true });
+		await wait(60);
+		assert.equal(events.filter((e) => e.type === "approval-settled").length, 1);
+	});
+	it("rejectAll also clears the timer", async () => {
+		const events: CliWireEvent[] = [];
+		const broker = createApprovalBroker(() => "ap1", { timeoutMs: 20 });
+		void broker.request("chat1", req, (e) => events.push(e));
+		broker.rejectAll("chat1");
+		await wait(60);
+		assert.equal(events.filter((e) => e.type === "approval-settled").length, 1);
+	});
+});
