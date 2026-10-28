@@ -15,7 +15,8 @@ chats/<session-id>.json    Full session: messages, optional plan, usage metadata
 graph/nodes.jsonl          Proposition assertions; IDs can repeat
 graph/chains.jsonl         Reasoning-chain assertions; logical chains can repeat
 graph/sources.json        Imported-note source metadata, keyed by source ID
-graph/format.json         Graph-family format stamp: {"version": 1}
+graph/groups.json         Session groups: names, nesting, session membership
+graph/format.json         Graph-family format stamp: {"version": 1} (2 once groups.json is written)
 graph/sessions.jsonl       Extraction checkpoints, NOT the session index
 graph/coverage.jsonl       Extraction fingerprints, NOT learner assessment
 graph/positions.json      Canvas layout, not semantic relationships
@@ -213,6 +214,12 @@ provenance remains readable/searchable but belongs to no birth session.
 - Missing/deleted source metadata can leave a valid graph. The session index then
   uses the source ID as its label and `file` as its fallback kind; this fallback
   alone does not prove the source was an imported file.
+- `groups.json` is organizing metadata, not learning evidence:
+  `{ "groups": [{"id", "name", "parentGroupId"?}], "sessionGroups": {"<sessionId>": "<groupId>"} }`.
+  A session (chat or `src_…` ID) belongs to at most one group, and groups nest through
+  `parentGroupId`. Nodes belong to a group only through their birth session. Writing
+  this file raises `format.json` to version 2; without it the data stays v1. The file
+  is absent until a group exists, and ledgers are never modified by grouping.
 - Chat deletion and chain simplification can rewrite ledgers. They are normally
   appended during extraction, but do not assume the files are immutable logs.
 
