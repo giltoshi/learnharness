@@ -117,3 +117,5 @@ export interface UndoRecord {
 }
 
 export type CliOpResult<T> = { ok: true; value: T } | { ok: false; code: string; error: string };
+
+export const DEFAULT_CLI_TITLE = "New CLI chat";
