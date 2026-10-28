@@ -18,6 +18,8 @@
 export * from "./contracts.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
+export * from "./cli-usage.ts";
+export * from "./cli-chat.ts";
 export * from "./render-settings.ts";
 
 export * from "./question-core.ts";

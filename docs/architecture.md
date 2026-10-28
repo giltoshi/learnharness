@@ -27,8 +27,9 @@ Hold the architecture along two orthogonal axes:
 |---|---|---|
 | **Classroom** — session engine | `data/chats/*.json` | the turn pipeline, prober→teacher, plan tree, questions, phases |
 | **Workbench** — background labor | `data/jobs/*.json` | job runner, researcher/demo-builder/visual-maker, steer delivery |
-| **Library** — world model | `data/graph/*` ledgers | extraction pipeline (sole graph writer), derivation, birth-session clusters |
+| **Library** — world model | `data/graph/*` ledgers | extraction pipeline (append), deletion and merge (the other two graph writers, §6), derivation, birth-session clusters |
 | **Practice** — problem sets | `data/practice/*.json` | partitioner→generator→grader pipeline, self-contained sets (§7) |
+| **Claude CLI chat** — assistant surface | `data/cli/*` (CLI chats, usage snapshot, undo point) | drives the `claude` CLI headless; reaches the app only through an app-run MCP endpoint; graph mutations go through `graph-ops` |
 | **Stage** — presentation shell | nothing server-side | components/, graph canvas, docks — pure consumer via `/api/*` |
 | **Machine room** — host | process + config | Electron main, standalone Next server, `config.ts`, data-dir seam, BYOK keys |
 
@@ -239,7 +240,7 @@ flowchart TB
     end
 
     subgraph LIBRARY["LIBRARY — world model (owns data/graph ledgers)"]
-        EXTRACT["extraction pipeline — extractor → auditor → merger (SOLE graph writer, serial per source)"]
+        EXTRACT["extraction pipeline — extractor → auditor → merger (append writer, serial per source; deletion and merge are the other two writers, §6)"]
         DERIVE["derivation — graphSnapshot · birth-session clusters (reads, never write)"]
         GRAPHDATA["append-only ledgers — data/graph/*.jsonl"]
     end
@@ -258,7 +259,7 @@ flowchart TB
     WAKE -->|"exactly-once wake turn [turnRunner seam → same handleChatRequest]"| TURN
     TURN -->|"triggerExtraction when uncoveredTokens ≥ chunkTokens [trigger seam, single-flight]"| EXTRACT
     EXTRACT -->|"reads transcript as evidence [ChatStore port]"| CHATDATA
-    EXTRACT -->|"append-only ledger writes [GraphStore port — sole writer]"| GRAPHDATA
+    EXTRACT -->|"append-only ledger writes [GraphStore port — append writer]"| GRAPHDATA
     DERIVE -->|"pure read: snapshot for home [graphSnapshot]"| GRAPHDATA
     UI -->|"POST /api/practice/sets · answers [HTTP transport]"| PPART
     PPART -->|"reads the graph ONCE at creation — propositions+chains frozen into the set [GraphStore port, pure read]"| GRAPHDATA
@@ -340,9 +341,9 @@ Sub-agents **verify, never one-shot**: the demo-builder headlessly executes its 
 
 ---
 
-## 6. The knowledge graph — two channels, one writer
+## 6. The knowledge graph — two channels, three writers
 
-**The extraction pipeline is the sole graph writer.** Nothing else appends to `data/graph/*.jsonl` — not the teacher, not the server, not a migration script. (The one sanctioned exception: `PUT /api/graph/positions` writes layout positions only, sanitized, with an incremental layout settle when the graph grew. Backfill scripts bypass this by design, as one-time operations.)
+**Three writers touch the graph ledgers, and only these.** Extraction appends; deletion (`core/graph-deletion.ts`) removes; merge (`core/graph-merge.ts`) replaces several nodes with one. Merge runs only through `src/server/graph-ops.ts`, which owns the extraction gate (refuse while an extraction runs), the pre-change snapshot, and the undo point. Nothing else writes `data/graph/*.jsonl` — not the teacher, not a migration script. (The one sanctioned exception: `PUT /api/graph/positions` writes layout positions only, sanitized, with an incremental layout settle when the graph grew. Backfill scripts bypass this by design, as one-time operations.)
 
 ```mermaid
 flowchart TB
@@ -377,6 +378,16 @@ flowchart TB
 **The teacher probes, nothing is injected** (supersedes the semantic-injection experiment, killed 2026-09-23): the teacher reaches the graph on its own terms through two read-only prober tools — `list_sessions` (birth sessions, the learner's files) and `list_propositions` (the names of what a session covered) — gated by the `agent.graphTools` setting (composing with `graph.enabled`). No topic embedding, no top-K selection, no session-start steer; the agent decides what to look at, and the graph never writes into a lesson unbidden.
 
 **Rendering**: a hand-rolled Canvas 2D renderer (`components/graph-canvas.ts` — one rAF loop, dirty-flag idle, d3-zoom camera, zoom-gated label fade, cluster hulls computed at draw time) over a d3-force layout in core (`layout.ts`, warm-started `incrementalLayout` + `settleGraphLayout`). Render settings and drag-committed positions persist server-side; the camera persists per-device in localStorage.
+
+### Claude CLI chat
+
+A second assistant surface, separate from the Classroom: a chat that drives the `claude` CLI headless (`claude -p`, stream-json) and lets it manage the graph and chat list. The CLI reaches the app only through an app-run MCP endpoint, never the filesystem.
+
+- **Per-turn, token-guarded MCP endpoint.** Each turn mints a random token and registers it; the CLI is pointed at `/api/cli/mcp/<token>`. The token dies when the turn ends, so the endpoint exists only while a turn is alive. The nine tools (list/search/get nodes, list/get/rename chats, delete nodes, merge nodes, delete chats) are the CLI's entire world.
+- **Approval broker.** `delete_nodes`, `merge_nodes` and `delete_chats` park on an approval card (in-memory, chat-scoped) and write nothing unless the learner approves; a rejection tells the model not to retry. When the turn ends for any reason, everything still parked is rejected. The merge card lets the learner edit the merged name and statement before approving.
+- **Hardened CLI flags.** `--tools ""`, `--strict-mcp-config`, `--setting-sources ""` and `--disable-slash-commands`, with only the nine `mcp__lh__*` tools allowed. Why: a default `claude -p` loads the user's plugins, MCP servers and hooks and cost 405k cache tokens for "say hi"; hardened, the same turn costs 883. It is the learner's subscription being spent.
+- **Subscription billing.** `ANTHROPIC_API_KEY` is stripped from the child env; with it set the CLI would bill the API instead of the subscription. Plan-limit usage is snapshotted per CLI turn into `data/cli`.
+- **Undo is graph changes only.** `graph-ops` snapshots the ledgers before each merge or delete and keeps one undo point, valid until the next graph change. Chat deletion is deliberately not undoable — the approval card says so.
 
 ---
 
@@ -462,7 +473,7 @@ For ordinary Next web/dev, `src/server/web-subscriptions.ts` composes these same
 | Law |
 |---|
 | **One composition root per concern** — `stores.ts` (storage), `chat-handler.ts` (a turn) |
-| **One writer per ledger** — the merger is the sole graph writer; chat records written only by the turn pipeline; job records only by the runner; positions PUT is the only sanctioned graph-adjacent exception |
+| **Three graph ledger writers, no others** — extraction (append), deletion, and merge (the latter two only via `graph-ops`); chat records written only by the turn pipeline; job records only by the runner; positions PUT is the only sanctioned graph-adjacent exception |
 | **The store never decides** — adapters persist and shape-guard; merge/dedup/derivation semantics are reader-side, in core |
 | **Derived, never dual-tracked** — append-only evidence; every state recomputed at read (snapshot, plan statuses, phases, costs, coverage) |
 | **Idempotency via deterministic keys** — steer ids, ledger refs, coverage fingerprints, source content fingerprints, cluster content hashes; re-running anything converges |
