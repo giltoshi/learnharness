@@ -6,7 +6,11 @@
  * file (and the adapter implementations in src/store/).
  */
 
+import * as path from "node:path";
+import { PATHS } from "../../config.ts";
 import { chatStore } from "../store/chats.ts";
+import { createCliChatStore } from "../store/cli-chats.ts";
+import { createCliStateStore } from "../store/cli-state.ts";
 import { graphStore } from "../store/graph.ts";
 import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
@@ -17,6 +21,8 @@ export const stores = {
 	graphStore,
 	jobStore,
 	settingsStore,
+	cliChatStore: createCliChatStore(path.join(PATHS.cli, "chats")),
+	cliStateStore: createCliStateStore(PATHS.cli),
 };
 
 export type Stores = typeof stores;

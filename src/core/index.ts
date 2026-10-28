@@ -19,6 +19,8 @@ export * from "./contracts.ts";
 export { birthSessionOf, impClusterKey } from "./session-clusters.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
+export * from "./cli-usage.ts";
+export * from "./cli-chat.ts";
 export * from "./folder-groups.ts";
 // Session groups (2026-10-27): only the pure tree helpers the Groups panel
 // needs; the mutating state operations stay server-side.

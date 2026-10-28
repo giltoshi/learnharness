@@ -1,0 +1,9 @@
+{
+  "id": "learnharness",
+  "name": "LearnHarness",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.7",
+  "description": "LearnHarness inside the vault: adaptive teaching, practice and a knowledge graph, running on your Claude subscription.",
+  "author": "Tosh + Claude",
+  "isDesktopOnly": true
+}

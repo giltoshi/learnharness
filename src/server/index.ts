@@ -12,6 +12,8 @@ export * from "./groups.ts";
 export { NotesImportError, notesSourceId } from "../agent/subagents/extraction.ts";
 export * from "./commit-positions.ts";
 export * from "./jobs.ts";
+export * from "./cli.ts";
+export * from "./cli-http.ts";
 export * from "./stores.ts";
 export { readRenderSettings, writeRenderSettings } from "../store/render-settings.ts";
 // The settings record + prompt overrides (settings-storage wave, 2026-09-19).
