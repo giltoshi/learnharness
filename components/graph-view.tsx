@@ -1619,15 +1619,33 @@ export function GraphView({
 		setDragging(true);
 	};
 	const onDragLeave = (e: React.DragEvent) => {
-		if (e.currentTarget === e.target) setDragging(false);
+		// Hide unless the pointer moved to another node INSIDE the zone (the
+		// canvas / inner divs fill it, so currentTarget === target never fires).
+		if (!(e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget))) setDragging(false);
 	};
 	const onDrop = (e: React.DragEvent) => {
 		if (!e.dataTransfer.types.includes("Files")) return;
 		e.preventDefault();
 		setDragging(false);
+		if (importing) return; // mirrors the disabled import buttons
 		// Read the entries synchronously inside the handler (they die when it yields).
-		void entriesFromDrop(e.dataTransfer).then((entries) => notesImport.onImportEntries(entries));
+		entriesFromDrop(e.dataTransfer)
+			.then((entries) => {
+				if (entries.length > 0) notesImport.onImportEntries(entries);
+			})
+			.catch((err) => console.error("[graph] folder drop failed:", err));
 	};
+	// A drag that ends or drops elsewhere never fires dragleave on the zone.
+	useEffect(() => {
+		if (!dragging) return;
+		const clear = () => setDragging(false);
+		window.addEventListener("dragend", clear);
+		window.addEventListener("drop", clear);
+		return () => {
+			window.removeEventListener("dragend", clear);
+			window.removeEventListener("drop", clear);
+		};
+	}, [dragging]);
 	const dropOverlay = dragging && (
 		<div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-ring bg-ring/5 text-center text-sm text-muted-foreground">
 			Drop a folder to import it as a group
