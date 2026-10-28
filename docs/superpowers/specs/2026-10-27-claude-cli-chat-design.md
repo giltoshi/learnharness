@@ -84,3 +84,14 @@ Deterministic, no network; the CLI is replaced by a fake emitting recorded strea
 ## Out of scope (v1)
 
 Node rename/tag; background usage pings; embedded terminal; CLI access to full chat transcripts; non-Claude CLIs.
+
+## Spike results
+
+Run 2026-10-27 against `claude` 2.1.312 on Windows 11 / Node 24.18 (fixture: `tests/fixtures/cli/tool-run.jsonl`).
+
+- **MCP http server accepted: yes.** The CLI posts `server/discover`, `initialize`, `notifications/initialized` (202), `tools/list`, then `tools/call` to a plain JSON-response `http` endpoint; the `system/init` line reports `"mcp_servers":[{"name":"lh","status":"connected","source":"dynamic"}]`.
+- **90 s tool call survived: yes.** With `MCP_TOOL_TIMEOUT=600000` a `tools/call` held for 90 000 ms returned `pong`, the run exited 0 (total about 110 s wall-clock).
+- **Spawn without shell: NO for the bare name.** `spawn("claude", …)` fails with `ENOENT` and `spawn("claude.cmd", …)` fails with `EINVAL` (Node refuses `.cmd` without a shell); the npm shim is only `claude`/`claude.cmd`/`claude.ps1`. The real binary `…\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe` spawns fine without a shell (`--version` printed 2.1.312). `shell: true` also works but concatenates unescaped args (and would mangle an empty `--tools ""`), so the runner should resolve the `.exe` path (or take it from config) instead.
+- **tool_use shape:** an `assistant` line has `message.content[]` containing `{"type":"tool_use","id":"toolu_…","name":"mcp__lh__ping_lh","input":{},"caller":{"type":"direct"}}`.
+- **tool_result shape:** a `user` line has `message.content[]` containing `{"tool_use_id":"toolu_…","type":"tool_result","content":[{"type":"text","text":"pong"}]}` (content is an array of text blocks, not a string), plus top-level `tool_use_result` and `tool_result_meta`; there is no `is_error` key on success.
+- Also seen: 2 `assistant` lines (tool_use turn, then final text turn), 1 `user` tool_result line, a `rate_limit_event` line, and a final `result` line with `total_cost_usd` and `usage`.
