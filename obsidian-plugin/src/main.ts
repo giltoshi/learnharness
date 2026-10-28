@@ -1,4 +1,5 @@
-import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, TFolder } from "obsidian";
+import { importPaths, postImport } from "./folder-import";
 import { LearnHarnessServer, type ServerSettings } from "./server";
 import { LearnHarnessView, VIEW_TYPE } from "./view";
 
@@ -17,6 +18,10 @@ export default class LearnHarnessPlugin extends Plugin {
 		this.addCommand({ id: "open", name: "Open", callback: () => void this.open() });
 		this.addCommand({ id: "restart-server", name: "Restart server", callback: () => void this.restart() });
 		this.addSettingTab(new LearnHarnessSettingTab(this.app, this));
+		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+			if (!(file instanceof TFolder) || file.isRoot()) return;
+			menu.addItem((item) => item.setTitle("Import into LearnHarness as a group").setIcon("graduation-cap").onClick(() => void this.importFolder(file)));
+		}));
 	}
 
 	override onunload(): void { this.server.stop(); }
@@ -26,6 +31,21 @@ export default class LearnHarnessPlugin extends Plugin {
 		const leaf = existing ?? this.app.workspace.getLeaf("tab");
 		if (!existing) await leaf.setViewState({ type: VIEW_TYPE, active: true });
 		await this.app.workspace.revealLeaf(leaf);
+	}
+
+	/** Imports every note under `folder` as nested groups; runs in the background with Notices. */
+	async importFolder(folder: TFolder): Promise<void> {
+		const byPath = new Map(this.app.vault.getFiles().map((f) => [f.path, f]));
+		const picked = importPaths(folder.path, folder.name, [...byPath.keys()]);
+		if (picked.length === 0) { new Notice(`No notes to import in ${folder.name}.`); return; }
+		new Notice(`Importing ${picked.length} notes from ${folder.name}…`);
+		try {
+			const notes = await Promise.all(picked.map(async ({ filePath, path }) => ({ path, content: await this.app.vault.cachedRead(byPath.get(filePath)!) })));
+			const { completed, failed, firstError } = await postImport(await this.server.start(), notes);
+			new Notice(`LearnHarness import of ${folder.name}: ${completed} completed, ${failed} failed.${firstError ? `\n${firstError}` : ""}`, failed ? 0 : undefined);
+		} catch (error) {
+			new Notice(`LearnHarness import of ${folder.name} failed: ${error instanceof Error ? error.message : String(error)}`, 0);
+		}
 	}
 
 	/** Picks up a fresh `npm run build:standalone` or changed settings. */
