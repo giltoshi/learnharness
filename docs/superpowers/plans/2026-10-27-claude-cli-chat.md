@@ -420,7 +420,8 @@ export function isUsageStale(s: UsageSnapshot, nowMs: number, maxAgeMs = 5 * 60_
 }
 
 export function usagePercent(w: UsageWindow): number {
-	return Math.round(w.utilization * 100);
+	// toFixed first: 0.285 * 100 is 28.499999999999996 in floating point and would round down.
+	return Math.round(Number((w.utilization * 100).toFixed(6)));
 }
 
 export function resetLabel(w: UsageWindow, nowMs: number): string {
