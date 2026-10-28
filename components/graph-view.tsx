@@ -66,7 +66,7 @@
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
 import Link from "next/link";
-import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
+import { FileTextIcon, FolderTreeIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
@@ -77,6 +77,7 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import { MenuShell } from "@/components/menu-shell.tsx";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
+import { GroupsPanel } from "@/components/groups-panel.tsx";
 import { Hint } from "@/components/ui/hint";
 import {
 	ARROW_LENGTH_LADDER,
@@ -866,6 +867,7 @@ export function GraphChromeRow({
 	settings,
 	changeSettings,
 	onOpenChains,
+	onOpenGroups,
 }: {
 	isEmpty: boolean;
 	query: string;
@@ -882,6 +884,9 @@ export function GraphChromeRow({
 	/** Opens the chain table overlay (the chains-overlay plan,
 	 *  2026-09-29). */
 	onOpenChains: () => void;
+	/** Opens the Groups panel (session groups, 2026-10-27). Optional so
+	 *  chrome-only renders (SSR pins) need not supply it. */
+	onOpenGroups?: () => void;
 }) {
 	return (
 		<>
@@ -924,6 +929,21 @@ export function GraphChromeRow({
 						>
 							<ListTreeIcon className="size-3" />
 							Chains
+						</button>
+					</Hint>
+				</div>
+			)}
+			{!isEmpty && onOpenGroups && (
+				<div className="graph-chrome-fade-in shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur">
+					<Hint label="Group sessions into collapsible groups" side="bottom">
+						<button
+							type="button"
+							onClick={onOpenGroups}
+							data-testid="open-groups"
+							className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent"
+						>
+							<FolderTreeIcon className="size-3" />
+							Groups
 						</button>
 					</Hint>
 				</div>
@@ -998,6 +1018,7 @@ export function GraphView({
 	const [selected, setSelected] = useState<Selection | null>(null);
 	// GROUP COLLAPSE (2026-10-27): which groups are collapsed into a blob.
 	// Starts empty on every load — groups start expanded. Display state only.
+	const [groupsOpen, setGroupsOpen] = useState(false);
 	const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
 	const toggleGroup = useCallback((groupId: string) => {
 		setCollapsedGroups((prev) => {
@@ -1674,6 +1695,7 @@ export function GraphView({
 					settings={settings}
 					changeSettings={changeSettings}
 					onOpenChains={() => setChainsOpen(true)}
+					onOpenGroups={() => setGroupsOpen((o) => !o)}
 				/>
 			</div>
 
@@ -1745,6 +1767,16 @@ export function GraphView({
 						<div className="mt-3 text-xs text-muted-foreground">No sessions recorded.</div>
 					)}
 				</div>
+			)}
+			{groupsOpen && snapshot && !isEmpty && (
+				<GroupsPanel
+					groups={snapshot.groups}
+					sessionGroups={snapshot.sessionGroups}
+					sessionLabels={{ ...snapshot.fileSources, ...snapshot.sessions }}
+					collapsed={collapsedGroups}
+					onToggleCollapse={toggleGroup}
+					onClose={() => setGroupsOpen(false)}
+				/>
 			)}
 			{/* The chain table overlay (chains-overlay plan, 2026-09-29):
 			    ABSOLUTE INSIDE the graph area (the session-overlay idiom —

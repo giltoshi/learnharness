@@ -20,6 +20,9 @@ export { birthSessionOf, impClusterKey } from "./session-clusters.ts";
 export * from "./ports.ts";
 export * from "./chains.ts";
 export * from "./folder-groups.ts";
+// Session groups (2026-10-27): only the pure tree helpers the Groups panel
+// needs; the mutating state operations stay server-side.
+export { descendantGroupIds, groupPathLabel } from "./groups.ts";
 export * from "./render-settings.ts";
 
 export * from "./question-core.ts";
