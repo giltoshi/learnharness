@@ -40,6 +40,7 @@
 
 import type { ReactNode } from "react";
 import { SidebarToggle } from "@/components/sidebar";
+import { UsageMeter } from "@/components/usage-meter";
 
 export function TopBar({
 	drag = true,
@@ -57,6 +58,7 @@ export function TopBar({
 		>
 			<SidebarToggle />
 			{children}
+			<div className="ml-auto"><UsageMeter /></div>
 		</header>
 	);
 }
