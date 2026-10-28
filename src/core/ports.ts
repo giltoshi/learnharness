@@ -14,6 +14,11 @@ import type {
 	ChatRecord,
 	ChatSettings,
 	ChatSummary,
+	CliChatRecord,
+	CliChatSummary,
+	CliMessage,
+	UndoRecord,
+	UsageSnapshot,
 	GraphChain,
 	GraphNode,
 	JobKind,
@@ -222,3 +227,19 @@ export interface AuthStore {
 	deleteAuthVar(name: string): void;
 }
 
+export interface CliChatStore {
+	create(title?: string): CliChatRecord;
+	get(id: string): CliChatRecord | null;
+	list(): CliChatSummary[];
+	save(id: string, patch: { messages?: CliMessage[]; cliSessionId?: string }): CliChatRecord;
+	rename(id: string, title: string): CliChatRecord;
+	delete(id: string): boolean;
+}
+
+export interface CliStateStore {
+	readUsage(): UsageSnapshot | null;
+	writeUsage(s: UsageSnapshot): void;
+	readUndo(): UndoRecord | null;
+	writeUndo(r: UndoRecord): void;
+	clearUndo(): void;
+}
