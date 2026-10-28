@@ -58,3 +58,16 @@ export function ensureGraphFormat(): void {
 	fs.mkdirSync(path.dirname(GRAPH_FORMAT_FILE), { recursive: true });
 	fs.writeFileSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: CURRENT_GRAPH_FORMAT_VERSION }, null, "\t") + "\n", "utf-8");
 }
+
+/** WRITE-SIDE RAISE: the groups write's stamp. Creates the sidecar when absent
+ *  (as ensureGraphFormat does) and rewrites a LOWER stamp up to the current
+ *  version. Never lowers a stamp; a NEWER stamp is left alone (reads refuse it).
+ *  Only the groups write raises: groups.json is the v2 addition, so a v1 data
+ *  dir with no groups stays readable by older builds. The first groups write
+ *  marks the family v2, so older builds refuse rather than drop the groups. */
+export function raiseGraphFormat(): void {
+	const v = stampedVersion();
+	if (v !== null && v >= CURRENT_GRAPH_FORMAT_VERSION) return;
+	fs.mkdirSync(path.dirname(GRAPH_FORMAT_FILE), { recursive: true });
+	fs.writeFileSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: CURRENT_GRAPH_FORMAT_VERSION }, null, "\t") + "\n", "utf-8");
+}

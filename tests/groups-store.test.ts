@@ -47,6 +47,20 @@ test("a corrupt file reads as empty, never throws", () => {
 	assert.deepEqual(graphStore.readGroups(), { groups: [], sessionGroups: {} });
 });
 
+test("a groups write raises a v1-stamped family to v2", () => {
+	fs.mkdirSync(path.dirname(GRAPH_FORMAT_FILE), { recursive: true });
+	fs.writeFileSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: 1 }), "utf-8");
+	graphStore.writeGroups({ groups: [{ id: "g1", name: "FINA 411" }], sessionGroups: {} });
+	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 2);
+});
+
+test("a non-groups graph write leaves a v1-stamped family at v1", () => {
+	fs.mkdirSync(path.dirname(GRAPH_FORMAT_FILE), { recursive: true });
+	fs.writeFileSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: 1 }), "utf-8");
+	graphStore.upsertSource({ id: "src_x", filePath: "x.md", importedAt: new Date().toISOString() });
+	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 1);
+});
+
 test("a NEWER-stamped family refuses reads honestly", () => {
 	fs.writeFileSync(GRAPH_FORMAT_FILE, JSON.stringify({ version: 99 }), "utf-8");
 	assert.throws(() => graphStore.readGroups(), /format version 99/);

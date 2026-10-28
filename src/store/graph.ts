@@ -35,7 +35,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { GROUPS_FILE, LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
-import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
+import { assertGraphFormat, ensureGraphFormat, raiseGraphFormat } from "./graph-format.ts";
 import { emptyGroups } from "../core/groups.ts";
 import type {
 	GraphChain,
@@ -324,7 +324,7 @@ function readGroupsFile(): GroupsState {
 
 function writeGroupsFile(state: GroupsState): void {
 	fs.mkdirSync(path.dirname(GROUPS_FILE), { recursive: true });
-	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
+	raiseGraphFormat(); // groups.json is v2: the write raises the stamp (graph-format.ts)
 	const tmp = `${GROUPS_FILE}.tmp-${crypto.randomUUID().slice(0, 8)}`;
 	try {
 		fs.writeFileSync(tmp, JSON.stringify(state, null, "\t"), "utf-8");
