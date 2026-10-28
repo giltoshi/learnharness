@@ -12,9 +12,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 		return Response.json({ error: "parentGroupId must be a string or null" }, { status: 400 });
 	}
 	if (body.name === undefined && body.parentGroupId === undefined) return Response.json({ error: "nothing to change" }, { status: 400 });
-	let out = { status: 200, body: {} as Record<string, unknown> };
-	if (typeof body.name === "string") out = groupApi.rename(id, body.name);
-	if (out.status === 200 && body.parentGroupId !== undefined) out = groupApi.setParent(id, body.parentGroupId as string | null);
+	const out = groupApi.update(id, {
+		name: typeof body.name === "string" ? body.name : undefined,
+		parentGroupId: body.parentGroupId as string | null | undefined,
+	});
 	return Response.json(out.body, { status: out.status });
 }
 

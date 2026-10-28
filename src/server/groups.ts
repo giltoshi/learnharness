@@ -25,6 +25,7 @@ export const groupApi = {
 	create: (input: { name: string; parentGroupId?: string; sessionIds?: string[] }) => respond(() => ops.createGroupOp(stores, input)),
 	rename: (id: string, name: string) => respond(() => ops.renameGroupOp(stores, id, name)),
 	setParent: (id: string, parentGroupId: string | null) => respond(() => ops.setGroupParentOp(stores, id, parentGroupId)),
+	update: (id: string, change: { name?: string; parentGroupId?: string | null }) => respond(() => ops.updateGroupOp(stores, id, change)),
 	remove: (id: string) => respond(() => ops.deleteGroupOp(stores, id)),
 	moveSessions: (groupId: string | null, sessionIds: string[]) =>
 		respond(() => (groupId === null ? ops.removeSessionsOp(stores, sessionIds) : ops.addSessionsOp(stores, groupId, sessionIds))),

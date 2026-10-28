@@ -45,6 +45,11 @@ function requireKnown(deps: GraphDeps, ids: readonly string[]): void {
 const nameOf = (groups: readonly { id: string; name: string }[], id: string): string =>
 	groups.find((g) => g.id === id)?.name ?? id;
 
+const renamedMessage = (oldName: string, newName: string): string => `Renamed group '${oldName}' to '${newName}'.`;
+
+const reparentedMessage = (name: string, parentName: string | null): string =>
+	parentName === null ? `Moved group '${name}' to the top level.` : `Moved group '${name}' into '${parentName}'.`;
+
 export function createGroupOp(
 	deps: GraphDeps,
 	input: { name: string; parentGroupId?: string; sessionIds?: string[] },
@@ -75,7 +80,7 @@ export function addSessionsOp(deps: GraphDeps, groupId: string, sessionIds: stri
 	requireKnown(deps, sessionIds);
 	const before = deps.graphStore.readGroups();
 	const r = addSessionsToGroup(before, groupId, sessionIds);
-	deps.graphStore.writeGroups(r.state);
+	if (r.moved.length > 0) deps.graphStore.writeGroups(r.state);
 	const nodes = sumNodes(nodeCounts(deps), r.moved);
 	const already = r.unchanged.length > 0 ? `; ${r.unchanged.length} already there` : "";
 	return {
@@ -89,7 +94,7 @@ export function addSessionsOp(deps: GraphDeps, groupId: string, sessionIds: stri
 
 export function removeSessionsOp(deps: GraphDeps, sessionIds: string[]) {
 	const r = removeSessionsFromGroup(deps.graphStore.readGroups(), sessionIds);
-	deps.graphStore.writeGroups(r.state);
+	if (r.removed.length > 0) deps.graphStore.writeGroups(r.state);
 	const nodes = sumNodes(nodeCounts(deps), r.removed);
 	const notGrouped = r.unchanged.length > 0 ? ` ${r.unchanged.length} was not in a group.` : "";
 	return {
@@ -100,25 +105,37 @@ export function removeSessionsOp(deps: GraphDeps, sessionIds: string[]) {
 	};
 }
 
-export function renameGroupOp(deps: GraphDeps, groupId: string, name: string) {
+/** Rename and/or re-parent one group in ONE write. Both changes are applied to
+ *  the in-memory state first, so a GroupError from either leaves the store untouched.
+ *  The parent message names the group as it is after the rename. */
+export function updateGroupOp(
+	deps: GraphDeps,
+	groupId: string,
+	change: { name?: string; parentGroupId?: string | null },
+) {
 	const before = deps.graphStore.readGroups();
-	const clean = cleanGroupName(name);
-	const old = nameOf(before.groups, groupId);
-	deps.graphStore.writeGroups(renameGroup(before, groupId, clean));
-	return { message: `Renamed group '${old}' to '${clean}'.` };
+	let state = before;
+	const messages: string[] = [];
+	if (change.name !== undefined) {
+		const clean = cleanGroupName(change.name);
+		state = renameGroup(state, groupId, clean);
+		messages.push(renamedMessage(nameOf(before.groups, groupId), clean));
+	}
+	if (change.parentGroupId !== undefined) {
+		state = setGroupParent(state, groupId, change.parentGroupId);
+		const parentName = change.parentGroupId === null ? null : nameOf(before.groups, change.parentGroupId);
+		messages.push(reparentedMessage(nameOf(state.groups, groupId), parentName));
+	}
+	if (messages.length > 0) deps.graphStore.writeGroups(state);
+	return { message: messages.length > 0 ? messages.join(" ") : "Nothing to change." };
+}
+
+export function renameGroupOp(deps: GraphDeps, groupId: string, name: string) {
+	return updateGroupOp(deps, groupId, { name });
 }
 
 export function setGroupParentOp(deps: GraphDeps, groupId: string, parentGroupId: string | null) {
-	const before = deps.graphStore.readGroups();
-	const next = setGroupParent(before, groupId, parentGroupId);
-	deps.graphStore.writeGroups(next);
-	const name = nameOf(before.groups, groupId);
-	return {
-		message:
-			parentGroupId === null
-				? `Moved group '${name}' to the top level.`
-				: `Moved group '${name}' into '${nameOf(before.groups, parentGroupId)}'.`,
-	};
+	return updateGroupOp(deps, groupId, { parentGroupId });
 }
 
 export function previewDeleteGroupOp(deps: GraphDeps, groupId: string) {

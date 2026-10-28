@@ -5,7 +5,7 @@ import type { ChatStore, GraphStore } from "../src/core/ports.ts";
 import { GroupError } from "../src/core/groups.ts";
 import {
 	addSessionsOp, createGroupOp, deleteGroupOp, listGroupsOp, previewDeleteGroupOp,
-	pruneSessionOp, removeSessionsOp, renameGroupOp, setGroupParentOp,
+	pruneSessionOp, removeSessionsOp, renameGroupOp, setGroupParentOp, updateGroupOp,
 } from "../src/core/group-ops.ts";
 
 const pt = (chatId: string) => ({ chatId, messageId: "m1" });
@@ -53,8 +53,10 @@ describe("move / remove / rename / parent", () => {
 		addSessionsOp(deps, a, ["src_a"]);
 		const r = addSessionsOp(deps, b, ["src_a", "src_b"]);
 		assert.equal(r.message, "Moved 2 sessions (5 nodes) into 'B'. 0 chains affected.");
+		writes = 0;
 		const again = addSessionsOp(deps, b, ["src_a"]);
 		assert.equal(again.message, "Moved 0 sessions (0 nodes) into 'B'; 1 already there. 0 chains affected.");
+		assert.equal(writes, 0);
 	});
 	it("removes", () => {
 		const a = createGroupOp(deps, { name: "A", sessionIds: ["src_a"] }).groupId;
@@ -63,6 +65,14 @@ describe("move / remove / rename / parent", () => {
 		assert.equal(state.sessionGroups.src_a, undefined);
 		assert.ok(a);
 	});
+	it("skips the write when nothing moves or is removed", () => {
+		createGroupOp(deps, { name: "A", sessionIds: ["src_a"] });
+		writes = 0;
+		removeSessionsOp(deps, ["src_b"]);
+		assert.equal(writes, 0);
+		removeSessionsOp(deps, ["src_a"]);
+		assert.equal(writes, 1);
+	});
 	it("renames and re-parents", () => {
 		const a = createGroupOp(deps, { name: "A" }).groupId;
 		const b = createGroupOp(deps, { name: "B" }).groupId;
@@ -70,6 +80,31 @@ describe("move / remove / rename / parent", () => {
 		assert.equal(setGroupParentOp(deps, b, a).message, "Moved group 'B' into 'Alpha'.");
 		assert.equal(setGroupParentOp(deps, b, null).message, "Moved group 'B' to the top level.");
 		assert.throws(() => setGroupParentOp(deps, a, a), (e) => e instanceof GroupError && e.code === "cycle");
+	});
+});
+
+describe("updateGroupOp (atomic PATCH)", () => {
+	it("a cycle throws and neither field is applied", () => {
+		const a = createGroupOp(deps, { name: "A" }).groupId;
+		const b = createGroupOp(deps, { name: "B", parentGroupId: a }).groupId;
+		writes = 0;
+		assert.throws(
+			() => updateGroupOp(deps, a, { name: "Alpha", parentGroupId: b }),
+			(e) => e instanceof GroupError && e.code === "cycle",
+		);
+		assert.equal(writes, 0);
+		assert.equal(state.groups.find((g) => g.id === a)?.name, "A");
+		assert.equal(state.groups.find((g) => g.id === a)?.parentGroupId, undefined);
+	});
+	it("applies both fields with one write and joins both messages", () => {
+		const a = createGroupOp(deps, { name: "A" }).groupId;
+		const b = createGroupOp(deps, { name: "B" }).groupId;
+		writes = 0;
+		const r = updateGroupOp(deps, b, { name: "Bee", parentGroupId: a });
+		assert.equal(writes, 1);
+		assert.equal(state.groups.find((g) => g.id === b)?.name, "Bee");
+		assert.equal(state.groups.find((g) => g.id === b)?.parentGroupId, a);
+		assert.equal(r.message, "Renamed group 'B' to 'Bee'. Moved group 'Bee' into 'A'.");
 	});
 });
 
