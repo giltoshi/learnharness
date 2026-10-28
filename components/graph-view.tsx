@@ -65,8 +65,9 @@
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
+import { entriesFromDrop, entriesFromFileList } from "@/components/folder-import.ts";
 import Link from "next/link";
-import { FileTextIcon, FolderTreeIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
+import { FileTextIcon, FolderTreeIcon, FolderUpIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
@@ -868,6 +869,8 @@ export function GraphChromeRow({
 	changeSettings,
 	onOpenChains,
 	onOpenGroups,
+	folderInputRef,
+	onImportFolder,
 }: {
 	isEmpty: boolean;
 	query: string;
@@ -887,6 +890,11 @@ export function GraphChromeRow({
 	/** Opens the Groups panel (session groups, 2026-10-27). Optional so
 	 *  chrome-only renders (SSR pins) need not supply it. */
 	onOpenGroups?: () => void;
+	/** Folder import (session groups, 2026-10-27): the hidden
+	 *  webkitdirectory input + its handler. Optional so chrome-only renders
+	 *  (SSR pins) need not supply them. */
+	folderInputRef?: React.RefObject<HTMLInputElement | null>;
+	onImportFolder?: (list: FileList | null) => void;
 }) {
 	return (
 		<>
@@ -980,6 +988,33 @@ export function GraphChromeRow({
 						{importing ? "Importing…" : "Import notes…"}
 					</button>
 				</Hint>
+				{onImportFolder && folderInputRef && (
+					<>
+						<input
+							ref={folderInputRef}
+							type="file"
+							className="hidden"
+							// Non-standard but universal (Chromium/Electron): pick a folder.
+							{...({ webkitdirectory: "" } as Record<string, string>)}
+							onChange={(e) => {
+								onImportFolder(e.target.files);
+								e.target.value = "";
+							}}
+						/>
+						<Hint label="Import a folder — its subfolders become groups" side="bottom">
+							<button
+								type="button"
+								disabled={importing}
+								onClick={() => folderInputRef.current?.click()}
+								data-testid="import-folder"
+								className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50"
+							>
+								<FolderUpIcon className="size-3" />
+								Import folder…
+							</button>
+						</Hint>
+					</>
+				)}
 			</div>
 			{!isEmpty && (
 				// Rendering settings — own component; the gear toggles it. The
@@ -1154,6 +1189,8 @@ export function GraphView({
 	// /api/graph/import; the runs surface in the status chips below, and the
 	// graph refetches when they finish (the runs-empty transition).
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	const folderInputRef = useRef<HTMLInputElement>(null);
+	const [dragging, setDragging] = useState(false);
 	// The dock's start-site nudge (accuracy wave, 2026-09-19): the import
 	// POST awaits the WHOLE pipeline server-side, so the run registers long
 	// before the response — nudge at click and again at +600ms to catch the
@@ -1573,11 +1610,41 @@ export function GraphView({
 		card.style.visibility = "visible";
 	}, [selected]);
 
+	// Folder drop zone (session groups, 2026-10-27): shared by the populated
+	// container and the empty-graph placeholder so a first-ever import can be
+	// a folder drop too.
+	const onDragOver = (e: React.DragEvent) => {
+		if (!e.dataTransfer.types.includes("Files")) return;
+		e.preventDefault();
+		setDragging(true);
+	};
+	const onDragLeave = (e: React.DragEvent) => {
+		if (e.currentTarget === e.target) setDragging(false);
+	};
+	const onDrop = (e: React.DragEvent) => {
+		if (!e.dataTransfer.types.includes("Files")) return;
+		e.preventDefault();
+		setDragging(false);
+		// Read the entries synchronously inside the handler (they die when it yields).
+		void entriesFromDrop(e.dataTransfer).then((entries) => notesImport.onImportEntries(entries));
+	};
+	const dropOverlay = dragging && (
+		<div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-ring bg-ring/5 text-center text-sm text-muted-foreground">
+			Drop a folder to import it as a group
+		</div>
+	);
+
 	return (
 		<div className="relative h-full w-full">
 			{isEmpty ? (
 				// The empty graph keeps the first action clear without zero-valued statistics.
-				<div className="flex h-full w-full items-center justify-center px-4">
+				<div
+					className="relative flex h-full w-full items-center justify-center px-4"
+					data-testid="graph-drop-zone"
+					onDragOver={onDragOver}
+					onDragLeave={onDragLeave}
+					onDrop={onDrop}
+				>
 					<div className="flex flex-col items-center gap-3 text-center text-muted-foreground">
 						<WaypointsIcon className="size-10 opacity-40" strokeWidth={1.25} />
 						<div className="text-lg font-medium text-foreground">Knowledge graph</div>
@@ -1585,9 +1652,17 @@ export function GraphView({
 							Start a session or import notes to build your graph.
 						</p>
 					</div>
+					{dropOverlay}
 				</div>
 			) : (
-				<div ref={containerRef} className="relative h-full w-full">
+				<div
+					ref={containerRef}
+					className="relative h-full w-full"
+					data-testid="graph-drop-zone"
+					onDragOver={onDragOver}
+					onDragLeave={onDragLeave}
+					onDrop={onDrop}
+				>
 					{/* THE single canvas: every layer (hulls, edges, nodes, both
 					    label systems, hover) draws into it, once per frame. */}
 					<canvas ref={canvasRef} className="block h-full w-full touch-none" />
@@ -1600,6 +1675,7 @@ export function GraphView({
 							style={{ position: "absolute", left: ctxNode.x, top: ctxNode.y, width: 0, height: 0 }}
 						/>
 					)}
+					{dropOverlay}
 				</div>
 			)}
 
@@ -1696,6 +1772,10 @@ export function GraphView({
 					changeSettings={changeSettings}
 					onOpenChains={() => setChainsOpen(true)}
 					onOpenGroups={() => setGroupsOpen((o) => !o)}
+					folderInputRef={folderInputRef}
+					onImportFolder={(list) => {
+						if (list) notesImport.onImportEntries(entriesFromFileList(list));
+					}}
 				/>
 			</div>
 
