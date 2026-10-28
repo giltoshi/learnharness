@@ -18,14 +18,14 @@ export interface NotesImportResult {
 
 /** Validate the entire response before applying any row: a malformed index
  * must never attribute another file's success to this file (same names included). */
-export function parseNotesImportResults(body: unknown, files: readonly File[]): NotesImportResult[] {
+export function parseNotesImportResults(body: unknown, files: readonly File[], paths?: readonly string[]): NotesImportResult[] {
 	const invalid = () => new Error("Invalid import response. Please retry the file.");
 	if (!body || typeof body !== "object" || !("results" in body) || !Array.isArray(body.results) || body.results.length !== files.length) throw invalid();
 	const seen = new Set<number>();
 	for (const raw of body.results) {
 		if (!raw || typeof raw !== "object") throw invalid();
 		const r = raw as NotesImportResult;
-		if (!Number.isInteger(r.requestIndex) || r.requestIndex < 0 || r.requestIndex >= files.length || seen.has(r.requestIndex) || r.filePath !== files[r.requestIndex]!.name) throw invalid();
+		if (!Number.isInteger(r.requestIndex) || r.requestIndex < 0 || r.requestIndex >= files.length || seen.has(r.requestIndex) || r.filePath !== (paths?.[r.requestIndex] ?? files[r.requestIndex]!.name)) throw invalid();
 		seen.add(r.requestIndex);
 		if (!["completed", "failed", "partial", "aborted", "busy"].includes(r.outcome) || typeof r.ok !== "boolean" || r.ok !== (r.outcome === "completed")) throw invalid();
 		if (r.stats !== undefined && (!r.stats || typeof r.stats !== "object" || !Number.isFinite(r.stats.nodes) || r.stats.nodes < 0 || (r.stats.chains !== undefined && (!Number.isFinite(r.stats.chains) || r.stats.chains < 0)))) throw invalid();
@@ -37,9 +37,10 @@ export function parseNotesImportResults(body: unknown, files: readonly File[]): 
 	return body.results as NotesImportResult[];
 }
 
-export async function postNotesImport(files: readonly File[]): Promise<NotesImportResult[]> {
+export async function postNotesImport(files: readonly File[], paths?: readonly string[]): Promise<NotesImportResult[]> {
 	const form = new FormData();
 	for (const file of files) form.append("files", file);
+	if (paths) for (const p of paths) form.append("paths", p);
 	const response = await fetch("/api/graph/import", { method: "POST", body: form });
 	let body: unknown;
 	try { body = await response.json(); }
@@ -48,7 +49,7 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 		const detail = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? `: ${body.error}` : "";
 		throw new Error(`Import request failed (HTTP ${response.status})${detail}. Please retry the file.`);
 	}
-	return parseNotesImportResults(body, files);
+	return parseNotesImportResults(body, files, paths);
 }
 
 /** Only error text survives a request; selected Files stay request-local. */
@@ -56,21 +57,21 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 	const [errors, setErrors] = useState<string[]>([]);
 	const [importing, setImporting] = useState(false);
 	const pending = useRef(false);
-	const submit = async (files: File[]) => {
+	const submit = async (files: File[], paths?: string[]) => {
 		if (pending.current || files.length === 0) return;
 		pending.current = true;
 		setImporting(true);
 		setErrors([]);
 		try {
 			callbacks.onStart?.();
-			const results = await postNotesImport(files);
+			const results = await postNotesImport(files, paths);
 			setErrors(results
 				.filter((result) => !result.ok)
 				.sort((a, b) => a.requestIndex - b.requestIndex)
 				.map((r) => `${r.filePath}: ${r.error}${r.code ? `\n${r.code}${r.provider ? ` — ${r.provider}` : ""}${r.missing?.length ? ` — ${r.missing.join(", ")}` : ""}${r.slots?.length ? ` — ${r.slots.join(", ")}` : ""}` : ""}`));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			setErrors(files.map((file) => `${file.name}: ${message}`));
+			setErrors(files.map((file, i) => `${paths?.[i] ?? file.name}: ${message}`));
 		} finally {
 			pending.current = false;
 			setImporting(false);
@@ -80,6 +81,9 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 	return {
 		errors, importing,
 		onImportFiles: (files: FileList | null) => { if (files) void submit(Array.from(files)); },
+		onImportEntries: (entries: { file: File; path: string }[]) => {
+			if (entries.length > 0) void submit(entries.map((e) => e.file), entries.map((e) => e.path));
+		},
 	};
 }
 

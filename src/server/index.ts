@@ -9,7 +9,7 @@ export * from "./events-stream.ts";
 export * from "./chats.ts";
 export * from "./graph.ts";
 export * from "./groups.ts";
-export { NotesImportError } from "../agent/subagents/extraction.ts";
+export { NotesImportError, notesSourceId } from "../agent/subagents/extraction.ts";
 export * from "./commit-positions.ts";
 export * from "./jobs.ts";
 export * from "./stores.ts";

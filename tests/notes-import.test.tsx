@@ -66,6 +66,13 @@ for (const [name, results] of [
 	assert.throws(() => parseNotesImportResults({ results }, files), /Please retry/);
 });
 
+it("accepts results echoing supplied relative paths and rejects a bare-name echo", () => {
+	const paths = ["Vault/A/same.md", "Vault/B/same.md"];
+	const ok = [{ ...completed(0), filePath: paths[0]! }, { ...completed(1), filePath: paths[1]! }];
+	assert.deepEqual(parseNotesImportResults({ results: ok }, files, paths), ok);
+	assert.throws(() => parseNotesImportResults({ results: [completed(0), completed(1)] }, files, paths), /Invalid import response/);
+});
+
 it("POST sends only captured files, and retains config/provider details", async () => {
 	const refused: NotesImportResult = { requestIndex: 0, filePath: files[1]!.name, ok: false, outcome: "failed", code: "provider_key_missing", provider: "openai", slots: ["cheap"], error: "No key is set" };
 	globalThis.fetch = async (url, init) => {
@@ -97,7 +104,7 @@ for (const outcome of ["completed", "failed", "partial", "aborted", "busy"] as c
 	assert.equal(finishes, 1);
 	const html = host!.innerHTML;
 	assert.doesNotMatch(html, /<button|<section|<ul|border|bg-card|rounded|shadow|Retry|Dismiss|Import complete|new propositions|Saved changes|Import stopped|already being imported/);
-	assert.deepEqual(Object.keys(current).sort(), ["errors", "importing", "onImportFiles"], "no retained rows, Files, retry or dismiss API");
+	assert.deepEqual(Object.keys(current).sort(), ["errors", "importing", "onImportEntries", "onImportFiles"], "no retained rows, Files, retry or dismiss API");
 	if (outcome === "completed") {
 		assert.equal(html, "");
 		assert.deepEqual(current.errors, []);

@@ -788,6 +788,12 @@ export function callUsage(usage: Usage): CallUsage {
 	};
 }
 
+/** The deterministic notes source id for a file path (src_ + 12 hex of the
+ *  path's sha256): the birth-session key of everything that file mints. */
+export function notesSourceId(filePath: string): string {
+	return `src_${crypto.createHash("sha256").update(filePath).digest("hex").slice(0, 12)}`;
+}
+
 export function createExtractionPipeline(deps: ExtractionPipelineDeps): ExtractionPipeline {
 	const { chatStore, graphStore } = deps;
 	// Stage-engine resolution: a direct test value wins; otherwise the
@@ -1418,7 +1424,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	/** Every explicit import processes the whole file. Identity, source digest,
 	 * auditor and usage history remain source-scoped; this is not exactly-once. */
 	async function importNotes(input: NotesImportInput): Promise<EmissionStats> {
-		const id = `src_${crypto.createHash("sha256").update(input.filePath).digest("hex").slice(0, 12)}`;
+		const id = notesSourceId(input.filePath);
 		// Acquire BEFORE source upsert: overlapping contents must not alter metadata.
 		if (inFlight.has(id)) throw new NotesImportError("busy", { nodes: 0, chains: 0 }, "This file is already being imported. Try again when it finishes.");
 		inFlight.add(id);

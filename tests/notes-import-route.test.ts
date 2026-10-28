@@ -96,6 +96,69 @@ it("real route plus in-memory ledgers and faux stages reprocess identical import
 	assert.ok([...sources.values()].every((source) => source.extractions?.length === 2 && source.contentFp === undefined));
 });
 
+function requestWithPaths(entries: [name: string, path: string][]) {
+	const form = new FormData();
+	for (const [name] of entries) form.append("files", new File(["identical text"], name));
+	for (const [, path] of entries) form.append("paths", path);
+	return new Request("http://localhost/api/graph/import", { method: "POST", body: form });
+}
+
+it("route passes relative paths to the importer and echoes them in results", async () => {
+	const seen: string[] = [];
+	extraction.importNotes = async ({ filePath }) => { seen.push(filePath); return { nodes: 0, chains: 0 }; };
+	const groups = { groups: [] as { id: string; name: string; parentGroupId?: string }[], sessionGroups: {} as Record<string, string> };
+	const g = stores.graphStore;
+	const saved = { readSources: g.readSources, readGroups: g.readGroups, writeGroups: g.writeGroups };
+	g.readSources = () => [];
+	g.readGroups = () => groups;
+	g.writeGroups = () => {};
+	try {
+		const response = await POST(requestWithPaths([["a.md", "Vault\\Sub\\a.md"], ["b.md", "Vault/b.md"]]));
+		assert.equal(response.status, 200);
+		const { results } = await response.json();
+		assert.deepEqual([...seen].sort(), ["Vault/Sub/a.md", "Vault/b.md"]);
+		assert.equal(results.find((r: { requestIndex: number }) => r.requestIndex === 0).filePath, "Vault/Sub/a.md");
+		assert.equal(results.find((r: { requestIndex: number }) => r.requestIndex === 1).filePath, "Vault/b.md");
+	} finally { Object.assign(g, saved); }
+});
+
+it("route rejects a paths field that does not match the files", async () => {
+	const form = new FormData();
+	form.append("files", new File(["x"], "a.md"));
+	form.append("files", new File(["x"], "b.md"));
+	form.append("paths", "F/a.md");
+	const response = await POST(new Request("http://localhost/api/graph/import", { method: "POST", body: form }));
+	assert.equal(response.status, 400);
+	assert.deepEqual(await response.json(), { results: [], error: "paths must match files" });
+});
+
+it("route reuses an earlier bare-name source (no re-extraction) and writes the folder groups", async () => {
+	const seen: string[] = [];
+	extraction.importNotes = async ({ filePath }) => { seen.push(filePath); return { nodes: 0, chains: 0 }; };
+	let written: { groups: { id: string; name: string }[]; sessionGroups: Record<string, string> } | undefined;
+	const g = stores.graphStore;
+	const saved = { readSources: g.readSources, readGroups: g.readGroups, writeGroups: g.writeGroups };
+	g.readSources = () => [{ id: "src_old", filePath: "Ch 01.md", importedAt: "2026-01-01T00:00:00.000Z" }];
+	g.readGroups = () => ({ groups: [], sessionGroups: {} });
+	g.writeGroups = (state) => { written = state; };
+	try {
+		const response = await POST(requestWithPaths([["Ch 01.md", "FINA/Ch 01.md"], ["Ch 02.md", "FINA/Ch 02.md"]]));
+		assert.equal(response.status, 200);
+		const { results } = await response.json();
+		assert.equal(results.length, 2);
+		const reused = results.find((r: { requestIndex: number }) => r.requestIndex === 0);
+		assert.equal(reused.outcome, "completed");
+		assert.equal(reused.ok, true);
+		assert.equal(reused.filePath, "FINA/Ch 01.md");
+		assert.equal(reused.reusedSourceId, "src_old");
+		assert.deepEqual(seen, ["FINA/Ch 02.md"]);
+		assert.equal(written!.groups.length, 1);
+		assert.equal(written!.groups[0]!.name, "FINA");
+		assert.equal(written!.sessionGroups["src_old"], written!.groups[0]!.id);
+		assert.equal(Object.keys(written!.sessionGroups).length, 2);
+	} finally { Object.assign(g, saved); }
+});
+
 it("route returns 400 without files", async () => {
 	const response = await POST(request([]));
 	assert.equal(response.status, 400);
