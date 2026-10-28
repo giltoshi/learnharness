@@ -8,9 +8,22 @@ import * as path from "node:path";
 import { DEFAULT_CLI_TITLE, type CliChatRecord, type CliChatSummary } from "../core/contracts/cli.ts";
 import type { CliChatStore } from "../core/ports.ts";
 
-export function createCliChatStore(dir: string): CliChatStore {
+const ID_RE = /^[A-Za-z0-9_-]+$/;
+
+export class InvalidCliChatIdError extends Error {
+	constructor(id: string) {
+		super(`Invalid CLI chat id: ${id}`);
+		this.name = "InvalidCliChatIdError";
+	}
+}
+
+function assertId(id: string): void {
+	if (!ID_RE.test(id)) throw new InvalidCliChatIdError(id);
+}
+
+export function createCliChatStore(dir: string, clock: () => Date = () => new Date()): CliChatStore {
 	const fileOf = (id: string): string => {
-		if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`Invalid CLI chat id: ${id}`);
+		assertId(id);
 		return path.join(dir, `${id}.json`);
 	};
 	const write = (record: CliChatRecord): void => {
@@ -21,11 +34,11 @@ export function createCliChatStore(dir: string): CliChatStore {
 		fs.renameSync(tmp, file);
 	};
 	const read = (id: string): CliChatRecord | null => {
+		const file = fileOf(id); // throws InvalidCliChatIdError before any fs access
 		try {
-			const parsed = JSON.parse(fs.readFileSync(fileOf(id), "utf-8")) as CliChatRecord;
+			const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as CliChatRecord;
 			return typeof parsed.id === "string" && Array.isArray(parsed.messages) ? parsed : null;
-		} catch (err) {
-			if (err instanceof Error && err.message.startsWith("Invalid CLI chat id")) throw err;
+		} catch {
 			return null;
 		}
 	};
@@ -36,9 +49,9 @@ export function createCliChatStore(dir: string): CliChatStore {
 	};
 	return {
 		create(title) {
-			const now = new Date().toISOString();
+			const now = clock().toISOString();
 			const record: CliChatRecord = {
-				id: `cli_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+				id: `cli_${clock().getTime().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
 				title: title?.trim() || DEFAULT_CLI_TITLE,
 				createdAt: now,
 				updatedAt: now,
@@ -54,7 +67,9 @@ export function createCliChatStore(dir: string): CliChatStore {
 			const out: CliChatSummary[] = [];
 			for (const name of names) {
 				if (!name.endsWith(".json")) continue;
-				const rec = read(name.slice(0, -5));
+				const stem = name.slice(0, -5);
+				if (!ID_RE.test(stem)) continue;
+				const rec = read(stem);
 				if (rec) out.push({ id: rec.id, title: rec.title, createdAt: rec.createdAt, updatedAt: rec.updatedAt, messageCount: rec.messages.length });
 			}
 			return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -63,7 +78,7 @@ export function createCliChatStore(dir: string): CliChatStore {
 			const rec = need(id);
 			const next: CliChatRecord = {
 				...rec,
-				...(patch.messages ? { messages: patch.messages, updatedAt: new Date().toISOString() } : {}),
+				...(patch.messages ? { messages: patch.messages, updatedAt: clock().toISOString() } : {}),
 				...(patch.cliSessionId ? { cliSessionId: patch.cliSessionId } : {}),
 			};
 			write(next);
@@ -77,10 +92,8 @@ export function createCliChatStore(dir: string): CliChatStore {
 			return next;
 		},
 		delete(id) {
-			try { fs.unlinkSync(fileOf(id)); return true; } catch (err) {
-				if (err instanceof Error && err.message.startsWith("Invalid CLI chat id")) throw err;
-				return false;
-			}
+			const file = fileOf(id);
+			try { fs.unlinkSync(file); return true; } catch { return false; }
 		},
 	};
 }

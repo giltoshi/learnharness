@@ -28,25 +28,26 @@ export function createGraphOps(d: GraphOpsDeps) {
 	const now = () => (d.now ?? (() => new Date()))();
 
 	/** Snapshot → run → (if it changed anything) settle + record the undo point. */
-	function withUndo<T>(label: string, run: () => CliOpResult<T>, changed: (v: T) => boolean): CliOpResult<T> {
+	function withUndo<T>(label: (v: T) => string, run: () => CliOpResult<T>, changed: (v: T) => boolean): CliOpResult<T> {
 		if (d.extractionBusy()) return BUSY;
 		const before = snapshotLedgers(d.graphStore);
 		const result = run();
 		if (!result.ok || !changed(result.value)) return result;
 		d.settle();
-		d.state.writeUndo({ id: randomUUID(), label, at: now().toISOString(), revisionAfter: d.revision(), ledgers: before });
+		d.state.writeUndo({ id: randomUUID(), label: label(result.value), at: now().toISOString(), revisionAfter: d.revision(), ledgers: before });
 		return result;
 	}
 
 	return {
 		mergeNodes(input: MergeInput): CliOpResult<{ newId: string } & MergeStats> {
-			return withUndo(`Merged ${new Set(input.ids).size} nodes into "${input.name.trim()}"`, () => mergeNodes(d.graphStore, input), () => true);
+			const label = `Merged ${new Set(input.ids).size} nodes into "${input.name.trim()}"`;
+			return withUndo(() => label, () => mergeNodes(d.graphStore, input), () => true);
 		},
 
 		deleteNodes(ids: string[]): CliOpResult<{ deleted: string[]; missing: string[]; chainsRemoved: number }> {
 			const unique = [...new Set(ids)];
 			return withUndo(
-				`Deleted ${unique.length} node${unique.length === 1 ? "" : "s"}`,
+				(v) => `Deleted ${v.deleted.length} node${v.deleted.length === 1 ? "" : "s"}`,
 				() => {
 					const deleted: string[] = [];
 					const missing: string[] = [];

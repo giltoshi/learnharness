@@ -25,7 +25,8 @@ describe("cli chat store", () => {
 		assert.equal(store.delete(chat.id), false);
 	});
 	it("list is newest-activity first; rename does not reorder", () => {
-		const store = createCliChatStore(tmp());
+		let tick = 0;
+		const store = createCliChatStore(tmp(), () => new Date(Date.UTC(2026, 9, 27, 0, 0, tick++)));
 		const a = store.create("A");
 		const b = store.create("B");
 		store.save(a.id, { messages: [newCliMessage("user", "m", "2026-10-27T00:00:00.000Z", "x")] });
@@ -41,6 +42,16 @@ describe("cli chat store", () => {
 		fs.writeFileSync(path.join(dir, "bad.json"), "{nope");
 		assert.equal(store.get("bad"), null);
 		assert.equal(store.get("missing"), null);
+	});
+	it("list skips stray files whose names are not valid ids; get/delete of path-like ids still throw", () => {
+		const dir = tmp();
+		const store = createCliChatStore(dir);
+		const chat = store.create("Real");
+		fs.writeFileSync(path.join(dir, "foo.bak.json"), "{}");
+		fs.writeFileSync(path.join(dir, "my chat.json"), "{}");
+		assert.deepEqual(store.list().map((c) => c.id), [chat.id]);
+		assert.throws(() => store.get("../x"));
+		assert.throws(() => store.delete("a/b"));
 	});
 	it("rename of an unknown chat throws", () => {
 		assert.throws(() => createCliChatStore(tmp()).rename("nope", "x"));
@@ -59,6 +70,18 @@ describe("cli state store", () => {
 		store.writeUndo(undo);
 		assert.deepEqual(store.readUndo(), undo);
 		store.clearUndo();
+		assert.equal(store.readUndo(), null);
+	});
+	it("wrong-shape JSON reads as null", () => {
+		const dir = tmp();
+		fs.writeFileSync(path.join(dir, "usage.json"), JSON.stringify({ nope: 1 }));
+		fs.writeFileSync(path.join(dir, "undo.json"), JSON.stringify({ id: "u", label: "l", revisionAfter: "5", ledgers: {} }));
+		const store = createCliStateStore(dir);
+		assert.equal(store.readUsage(), null);
+		assert.equal(store.readUndo(), null);
+		fs.writeFileSync(path.join(dir, "usage.json"), "null");
+		fs.writeFileSync(path.join(dir, "undo.json"), "[]");
+		assert.equal(store.readUsage(), null);
 		assert.equal(store.readUndo(), null);
 	});
 	it("a corrupt file reads as null", () => {
