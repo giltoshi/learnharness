@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from "react";
 import { isUsageStale, resetLabel, usagePercent, type UsageSnapshot, type UsageWindow } from "@/src/core";
-import { timeOfDay } from "@/components/cli-format";
+import { pickNewerUsage, timeOfDay } from "@/components/cli-format";
 
 function Window({ label, w, nowMs }: { label: string; w: UsageWindow | null; nowMs: number }) {
 	if (!w) return null;
@@ -44,9 +44,9 @@ export function UsageMeter() {
 		const load = () =>
 			fetch("/api/cli/usage")
 				.then((r) => r.json() as Promise<{ usage: UsageSnapshot | null }>)
-				.then((j) => { if (alive) { setUsage(j.usage); setNowMs(Date.now()); } })
+				.then((j) => { if (alive) { setUsage((cur) => pickNewerUsage(cur, j.usage)); setNowMs(Date.now()); } })
 				.catch(() => {});
-		const onUsage = (e: Event) => { setUsage((e as CustomEvent<UsageSnapshot>).detail); setNowMs(Date.now()); };
+		const onUsage = (e: Event) => { setUsage((cur) => pickNewerUsage(cur, (e as CustomEvent<UsageSnapshot>).detail)); setNowMs(Date.now()); };
 		void load();
 		window.addEventListener("focus", load);
 		window.addEventListener("lh:cli-usage", onUsage);

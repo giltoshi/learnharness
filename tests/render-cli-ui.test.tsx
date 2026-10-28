@@ -42,6 +42,15 @@ describe("ApprovalCard", () => {
 		const html = renderToStaticMarkup(<ApprovalCard approval={{ ...base, tool: "delete_nodes" }} onDecide={() => {}} />);
 		assert.doesNotMatch(html, /<input/);
 	});
+	it("disabled card disables both buttons with aria-disabled", () => {
+		const html = renderToStaticMarkup(<ApprovalCard approval={base} disabled onDecide={() => {}} />);
+		assert.equal((html.match(/disabled=""/g) ?? []).length, 2); assert.match(html, /aria-disabled="true"/);
+	});
+	it("blank name disables Approve (not Reject) and shows a hint", () => {
+		const html = renderToStaticMarkup(<ApprovalCard approval={{ ...base, edit: { name: "", statement: "s" } }} onDecide={() => {}} />);
+		assert.match(html, /<button[^>]*disabled=""[^>]*>Approve</); assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>Reject</);
+		assert.match(html, /required/i);
+	});
 	it("settled card shows the outcome and no buttons", () => {
 		const html = renderToStaticMarkup(<ApprovalCard approval={{ ...base, status: "approved" }} onDecide={() => {}} />);
 		assert.match(html, /Approved/); assert.doesNotMatch(html, />Reject</);

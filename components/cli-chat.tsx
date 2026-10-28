@@ -9,18 +9,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Conversation, ConversationContent } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { ApprovalCard } from "@/components/cli-approval-card";
-import { toolSummary } from "@/components/cli-format";
+import { createNdjsonParser, toolSummary } from "@/components/cli-format";
 import { TopBar } from "@/components/top-bar";
 import { applyWireEvent, newCliMessage, type CliApprovalEdit, type CliMessage, type CliWireEvent } from "@/src/core";
 
-export function CliMessageView({ message, onDecide }: { message: CliMessage; onDecide: (approvalId: string, approved: boolean, edit?: CliApprovalEdit) => void }) {
+export function CliMessageView({ message, onDecide, deciding }: { message: CliMessage; deciding?: ReadonlySet<string>; onDecide: (approvalId: string, approved: boolean, edit?: CliApprovalEdit) => void }) {
 	return (
 		<Message from={message.role}>
 			<MessageContent>
 				{message.parts.map((p, i) => {
 					if (p.type === "text") return message.role === "user" ? <span key={i} className="whitespace-pre-wrap">{p.text}</span> : <MessageResponse key={i}>{p.text}</MessageResponse>;
 					if (p.type === "tool") return <div key={i} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground" title={p.call.output}>{toolSummary(p.call)} · {p.call.status}</div>;
-					if (p.type === "approval") return <ApprovalCard key={i} approval={p.approval} onDecide={(a, e) => onDecide(p.approval.id, a, e)} />;
+					if (p.type === "approval") return <ApprovalCard key={i} approval={p.approval} disabled={deciding?.has(p.approval.id) ?? false} onDecide={(a, e) => onDecide(p.approval.id, a, e)} />;
 					return <div key={i} className="text-sm text-destructive">{p.message}</div>;
 				})}
 			</MessageContent>
@@ -33,7 +33,11 @@ export function CliChat({ chatId, title, initialMessages }: { chatId: string; ti
 	const [busy, setBusy] = useState(false);
 	const [text, setText] = useState("");
 	const [undo, setUndo] = useState<{ label: string } | null>(null);
+	const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());
+	const decidingRef = useRef<Set<string>>(new Set());
 	const abortRef = useRef<AbortController | null>(null);
+	const liveAssistantId = useRef<string | null>(null);
+	useEffect(() => () => abortRef.current?.abort(), []);
 
 	const refreshUndo = useCallback(() => {
 		fetch("/api/cli/undo").then((r) => r.json() as Promise<{ undo: { label: string } | null }>).then((j) => setUndo(j.undo)).catch(() => {});
@@ -47,14 +51,16 @@ export function CliChat({ chatId, title, initialMessages }: { chatId: string; ti
 		setBusy(true);
 		const stamp = Date.now().toString(36);
 		const now = new Date().toISOString();
-		let assistant = newCliMessage("assistant", `${stamp}-a`, now);
+		const assistantId = `${stamp}-a`;
+		liveAssistantId.current = assistantId;
+		let assistant = newCliMessage("assistant", assistantId, now);
 		setMessages((m) => [...m, newCliMessage("user", `${stamp}-u`, now, prompt), assistant]);
 		const ac = new AbortController();
 		abortRef.current = ac;
 		const apply = (ev: CliWireEvent) => {
 			if (ev.type === "usage") window.dispatchEvent(new CustomEvent("lh:cli-usage", { detail: ev.usage }));
 			assistant = applyWireEvent(assistant, ev);
-			setMessages((m) => [...m.slice(0, -1), assistant]);
+			setMessages((m) => m.map((x) => (x.id === assistantId ? assistant : x)));
 		};
 		try {
 			const res = await fetch(`/api/cli/chats/${chatId}/turn`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: prompt }), signal: ac.signal });
@@ -65,18 +71,14 @@ export function CliChat({ chatId, title, initialMessages }: { chatId: string; ti
 			}
 			const reader = res.body.getReader();
 			const decoder = new TextDecoder();
-			let buf = "";
+			const parser = createNdjsonParser((e) => apply(e as CliWireEvent), (line) => console.warn("Skipped malformed stream line", line));
 			for (;;) {
 				const { value, done } = await reader.read();
 				if (done) break;
-				buf += decoder.decode(value, { stream: true });
-				let nl: number;
-				while ((nl = buf.indexOf("\n")) >= 0) {
-					const line = buf.slice(0, nl).trim();
-					buf = buf.slice(nl + 1);
-					if (line) apply(JSON.parse(line) as CliWireEvent);
-				}
+				parser.push(decoder.decode(value, { stream: true }));
 			}
+			parser.push(decoder.decode());
+			parser.end();
 		} catch (err) {
 			if (!ac.signal.aborted) apply({ type: "error", message: err instanceof Error ? err.message : String(err) });
 		} finally {
@@ -86,15 +88,43 @@ export function CliChat({ chatId, title, initialMessages }: { chatId: string; ti
 		}
 	}, [text, busy, chatId, refreshUndo]);
 
-	const decide = useCallback((approvalId: string, approved: boolean, edit?: CliApprovalEdit) => {
-		void fetch(`/api/cli/chats/${chatId}/approvals/${approvalId}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approved, ...(edit ? { edit } : {}) }) });
-	}, [chatId]);
+	const appendError = useCallback((message: string) => {
+		const id = liveAssistantId.current;
+		const part = { type: "error" as const, message };
+		setMessages((m) => {
+			if (id && m.some((x) => x.id === id)) return m.map((x) => (x.id === id ? { ...x, parts: [...x.parts, part] } : x));
+			return [...m, { id: `${Date.now()}-e`, role: "assistant" as const, createdAt: new Date().toISOString(), parts: [part] }];
+		});
+	}, []);
+
+	const decide = useCallback(async (approvalId: string, approved: boolean, edit?: CliApprovalEdit) => {
+		if (decidingRef.current.has(approvalId)) return;
+		decidingRef.current.add(approvalId);
+		setDeciding(new Set(decidingRef.current));
+		try {
+			const res = await fetch(`/api/cli/chats/${chatId}/approvals/${approvalId}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approved, ...(edit ? { edit } : {}) }) });
+			if (!res.ok) {
+				const j = (await res.json().catch(() => ({}))) as { error?: string };
+				appendError(`Could not send your decision: ${j.error ?? `request failed (${res.status})`}`);
+			}
+		} catch (err) {
+			appendError(`Could not send your decision: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			decidingRef.current.delete(approvalId);
+			setDeciding(new Set(decidingRef.current));
+		}
+	}, [chatId, appendError]);
 
 	const doUndo = useCallback(async () => {
-		const res = await fetch("/api/cli/undo", { method: "POST" });
-		if (!res.ok) {
-			const j = (await res.json().catch(() => ({}))) as { error?: string };
-			setMessages((m) => [...m, { id: `${Date.now()}-e`, role: "assistant", createdAt: new Date().toISOString(), parts: [{ type: "error", message: j.error ?? "Undo failed" }] }]);
+		const fail = (message: string) => setMessages((m) => [...m, { id: `${Date.now()}-e`, role: "assistant", createdAt: new Date().toISOString(), parts: [{ type: "error", message }] }]);
+		try {
+			const res = await fetch("/api/cli/undo", { method: "POST" });
+			if (!res.ok) {
+				const j = (await res.json().catch(() => ({}))) as { error?: string };
+				fail(j.error ?? "Undo failed");
+			}
+		} catch (err) {
+			fail(err instanceof Error ? err.message : "Undo failed");
 		}
 		refreshUndo();
 	}, [refreshUndo]);
@@ -110,11 +140,11 @@ export function CliChat({ chatId, title, initialMessages }: { chatId: string; ti
 			)}
 			<Conversation className="min-h-0 flex-1">
 				<ConversationContent>
-					{messages.map((m) => <CliMessageView key={m.id} message={m} onDecide={decide} />)}
+					{messages.map((m) => <CliMessageView key={m.id} message={m} onDecide={(id, a, e) => void decide(id, a, e)} deciding={deciding} />)}
 				</ConversationContent>
 			</Conversation>
 			<form className="flex gap-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-				<textarea className="min-h-10 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm" rows={2} placeholder="Ask Claude to tidy your nodes or chats…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+				<textarea className="min-h-10 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm" aria-label="Message Claude" rows={2} placeholder="Ask Claude to tidy your nodes or chats…" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
 				{busy ? <button type="button" className="rounded-md border border-border px-3 text-sm" onClick={() => abortRef.current?.abort()}>Stop</button> : <button type="submit" className="rounded-md bg-foreground px-3 text-sm text-background" disabled={text.trim() === ""}>Send</button>}
 			</form>
 		</div>

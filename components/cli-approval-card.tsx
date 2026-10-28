@@ -4,10 +4,11 @@ import { useState } from "react";
 import type { CliApproval, CliApprovalEdit } from "@/src/core";
 
 /** The in-chat approval card: what will change, optional editable identity, Approve / Reject. */
-export function ApprovalCard({ approval, onDecide }: { approval: CliApproval; onDecide: (approved: boolean, edit?: CliApprovalEdit) => void }) {
+export function ApprovalCard({ approval, onDecide, disabled = false }: { approval: CliApproval; disabled?: boolean; onDecide: (approved: boolean, edit?: CliApprovalEdit) => void }) {
 	const [name, setName] = useState(approval.edit?.name ?? "");
 	const [statement, setStatement] = useState(approval.edit?.statement ?? "");
 	const pending = approval.status === "pending";
+	const blank = approval.edit !== undefined && (name.trim() === "" || statement.trim() === "");
 	return (
 		<div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="approval-card">
 			<div className="font-medium">{approval.title}</div>
@@ -26,8 +27,9 @@ export function ApprovalCard({ approval, onDecide }: { approval: CliApproval; on
 			)}
 			{pending ? (
 				<div className="mt-3 flex gap-2">
-					<button type="button" className="rounded-md bg-foreground px-3 py-1 text-xs text-background" onClick={() => onDecide(true, approval.edit ? { name, statement } : undefined)}>Approve</button>
-					<button type="button" className="rounded-md border border-border px-3 py-1 text-xs" onClick={() => onDecide(false)}>Reject</button>
+					<button type="button" className="rounded-md bg-foreground px-3 py-1 text-xs text-background disabled:opacity-50" disabled={disabled || blank} aria-disabled={disabled || blank} onClick={() => onDecide(true, approval.edit ? { name, statement } : undefined)}>Approve</button>
+					<button type="button" className="rounded-md border border-border px-3 py-1 text-xs disabled:opacity-50" disabled={disabled} aria-disabled={disabled} onClick={() => onDecide(false)}>Reject</button>
+					{blank && <span className="self-center text-xs text-muted-foreground">Name and statement are required to approve.</span>}
 				</div>
 			) : (
 				<div className="mt-2 text-xs uppercase tracking-wider text-muted-foreground">{approval.status === "approved" ? "Approved" : "Rejected"}</div>
