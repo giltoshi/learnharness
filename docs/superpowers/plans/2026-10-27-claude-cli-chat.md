@@ -1572,7 +1572,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { describe, it } from "node:test";
 import { buildCliArgs } from "../src/agent/cli/args.ts";
-import { runCliTurn, type CliProc, type SpawnProc } from "../src/agent/cli/runner.ts";
+import { resolveClaudeBin, runCliTurn, type CliProc, type SpawnProc } from "../src/agent/cli/runner.ts";
 
 async function collect<T>(it: AsyncIterable<T>): Promise<T[]> { const out: T[] = []; for await (const x of it) out.push(x); return out; }
 
@@ -1601,6 +1601,27 @@ describe("buildCliArgs", () => {
 		assert.equal(a[a.indexOf("--allowedTools") + 1], "mcp__lh__list_nodes,mcp__lh__merge_nodes");
 		assert.ok(!a.includes("--resume"));
 		assert.deepEqual(buildCliArgs({ mcpConfigPath: "m.json", systemPromptPath: "s.md", toolNames: [], resume: "sess" }).slice(-2), ["--resume", "sess"]);
+	});
+});
+
+describe("resolveClaudeBin", () => {
+	const none = () => [] as string[];
+	it("LH_CLAUDE_BIN wins everywhere", () => {
+		assert.equal(resolveClaudeBin({ LH_CLAUDE_BIN: "/x/claude" }, "win32", () => false, none), "/x/claude");
+	});
+	it("non-windows uses the bare name", () => {
+		assert.equal(resolveClaudeBin({}, "darwin", () => false, none), "claude");
+	});
+	it("windows: a .exe hit from where is used as-is", () => {
+		assert.equal(resolveClaudeBin({}, "win32", () => false, () => ["C:\\bin\\claude.exe"]), "C:\\bin\\claude.exe");
+	});
+	it("windows: a .cmd shim resolves to the npm package's claude.exe when it exists", () => {
+		const shim = "C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd";
+		const exe = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
+		assert.equal(resolveClaudeBin({}, "win32", (p) => p.toLowerCase() === exe.toLowerCase() || p === exe, () => [shim]), exe);
+	});
+	it("windows: nothing found falls back to the bare name", () => {
+		assert.equal(resolveClaudeBin({}, "win32", () => false, () => ["C:\\npm\\claude.cmd"]), "claude");
 	});
 });
 
@@ -1704,7 +1725,7 @@ Rules:
  * ANTHROPIC_API_KEY: with it set the CLI bills the API instead of the
  * learner's subscription, which defeats the plan-limit meter.
  */
-import { spawn as nodeSpawn } from "node:child_process";
+import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1751,6 +1772,37 @@ export interface RunCliTurnOptions {
 	now?: () => Date;
 }
 
+/**
+ * Spike finding (Task 1): on Windows the bare name `claude` cannot be spawned without a
+ * shell (ENOENT; `claude.cmd` → EINVAL), and shell:true mangles `--tools ""`. The npm
+ * install ships a real binary at <npm-prefix>/node_modules/@anthropic-ai/claude-code/bin/claude.exe,
+ * next to the `claude.cmd` shim that `where` finds. Resolution order: LH_CLAUDE_BIN override →
+ * (win32) a `.exe` hit from `where`, or the npm-package exe beside a `.cmd` hit → bare "claude".
+ */
+export function resolveClaudeBin(
+	env: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+	exists: (p: string) => boolean = fs.existsSync,
+	where: () => string[] = defaultWhere,
+): string {
+	if (env.LH_CLAUDE_BIN) return env.LH_CLAUDE_BIN;
+	if (platform !== "win32") return "claude";
+	for (const found of where()) {
+		if (found.toLowerCase().endsWith(".exe")) return found;
+		const exe = path.join(path.dirname(found), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+		if (exists(exe)) return exe;
+	}
+	return "claude";
+}
+
+function defaultWhere(): string[] {
+	try {
+		return execFileSync("where.exe", ["claude"], { encoding: "utf-8" }).split(/\r?\n/).filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
 const NOT_FOUND = "Claude CLI not found. Install it from https://claude.com/claude-code, run `claude` once to sign in, then try again.";
 
 export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEvent> {
@@ -1765,7 +1817,7 @@ export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEv
 		const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: "600000" };
 		delete env.ANTHROPIC_API_KEY;
 
-		const proc = (o.spawnProc ?? spawnProc)(o.bin ?? process.env.LH_CLAUDE_BIN ?? "claude", buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
+		const proc = (o.spawnProc ?? spawnProc)(o.bin ?? resolveClaudeBin(), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
 		const onAbort = () => proc.kill();
 		if (o.signal?.aborted) onAbort();
 		else o.signal?.addEventListener("abort", onAbort, { once: true });
