@@ -445,6 +445,9 @@ export async function handleChatInput(
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
+						// The group tools (2026-10-27): behind the SAME gate as the
+						// prober's map readers.
+						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
 					},
 					agentOpts,
 				)
