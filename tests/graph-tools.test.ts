@@ -47,6 +47,7 @@ function fakeStores(
 		readCoverage: () => [],
 		readSources: () => [],
 		readPositions: () => ({}),
+		readGroups: () => ({ groups: [], sessionGroups: {} }),
 		writePositions: () => {},
 		readClusterLabels: () => [],
 		appendClusterLabel: () => {},

@@ -357,6 +357,11 @@ export interface GraphSnapshot {
 	 * nodes are never partitioned. Purely provenance-derived — never
 	 * depends on layout. */
 	clusters: Cluster[];
+	/** The session groups (data/graph/groups.json) and each session's
+	 *  group — what the canvas projects into group boxes / collapsed blobs
+	 *  and the Groups panel lists. Metadata only. */
+	groups: GraphGroup[];
+	sessionGroups: Record<string, string>;
 	/** Resting layout positions per node id, when a positions ledger
 	 *  exists (core/layout.ts settle writes it). Absent on a fresh graph —
 	 *  the view then falls back to its own one-shot forceAtlas2 pass. */

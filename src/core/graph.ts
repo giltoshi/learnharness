@@ -67,6 +67,7 @@ import type {
 import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 import { formatChainLine } from "./chains.ts";
 import { attachImpToCommunities, birthSessionOf, birthSessionPartition } from "./session-clusters.ts";
+import { groupPathLabel, sessionIdsInGroup } from "./groups.ts";
 import type { ChatStore, GraphStore } from "./ports.ts";
 
 /** The storage ports every graph operation needs, passed explicitly. */
@@ -582,6 +583,7 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	// ever run. Absent on a fresh graph — the view falls back to its own
 	// one-shot pass until the first merge writes the ledger.
 	const positions = deps.graphStore.readPositions();
+	const { groups, sessionGroups } = deps.graphStore.readGroups();
 
 	return {
 		nodes,
@@ -594,6 +596,8 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 		fileSources,
 		nodeSessions,
 		clusters,
+		groups,
+		sessionGroups,
 		...(Object.keys(positions).length > 0 ? { positions } : {}),
 	};
 }
@@ -623,20 +627,29 @@ export interface GraphSessionEntry {
 	 *  clustering's count — shared/re-encountered nodes count for their
 	 *  birth session only). */
 	propositions: number;
+	/** The session's group id (data/graph/groups.json), or null. */
+	groupId: string | null;
+	/** The group's path label ("FINA 411 / Risk"), or null. */
+	groupName: string | null;
 }
 
 /** The prober's session list: every birth session, most-recently-active
- *  first (undatable records sink, in stable id order). */
-export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
+ *  first (undatable records sink, in stable id order). `filter.groupId`
+ *  keeps only the sessions in that group (deep: its subgroups count);
+ *  an unknown group yields []. */
+export function graphSessionIndex(deps: GraphDeps, filter: { groupId?: string } = {}): GraphSessionEntry[] {
 	const counts = new Map<string, number>();
 	const born = getGraph(deps.graphStore);
 	for (const cluster of birthSessionPartition(born.nodes)) {
 		counts.set(cluster.id, cluster.members.length);
 	}
+	const groups = deps.graphStore.readGroups();
+	const allowed = filter.groupId === undefined ? null : new Set(sessionIdsInGroup(groups, filter.groupId));
 	const chats = new Map(deps.chatStore.listChats().map((chat) => [chat.id, chat]));
 	const sources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
 	const entries: GraphSessionEntry[] = [];
 	for (const [id, propositions] of counts) {
+		if (allowed && !allowed.has(id)) continue;
 		const chat = chats.get(id);		if (chat) {
 			entries.push({
 				id,
@@ -645,6 +658,8 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 				createdAt: chat.createdAt,
 				updatedAt: chat.updatedAt,
 				propositions,
+				groupId: groups.sessionGroups[id] ?? null,
+				groupName: groups.sessionGroups[id] === undefined ? null : groupPathLabel(groups.groups, groups.sessionGroups[id]!),
 			});
 			continue;
 		}
@@ -656,6 +671,8 @@ export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
 			createdAt: source?.importedAt ?? null,
 			updatedAt: source?.importedAt ?? null,
 			propositions,
+			groupId: groups.sessionGroups[id] ?? null,
+			groupName: groups.sessionGroups[id] === undefined ? null : groupPathLabel(groups.groups, groups.sessionGroups[id]!),
 		});
 	}
 	return entries.sort(

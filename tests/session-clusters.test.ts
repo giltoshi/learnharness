@@ -58,6 +58,7 @@ function fakeStores(
 		readSources: () =>
 			(over.sources ?? []).map((s) => ({ ...s, extractions: [] }) as unknown as NotesSource),
 		readPositions: () => ({}),
+		readGroups: () => ({ groups: [], sessionGroups: {} }),
 		writePositions: () => {},
 	} as unknown as GraphStore;
 	const chatStore: ChatStore = {
@@ -130,6 +131,8 @@ describe("notes files as birth sessions", () => {
 				createdAt: "2026-09-22T00:00:00.000Z",
 				updatedAt: "2026-09-22T00:00:00.000Z",
 				propositions: 3,
+				groupId: null,
+				groupName: null,
 			},
 		], "the file births under its src id; the childless chat has no entry (birth sessions only)");
 	});
@@ -216,6 +219,8 @@ describe("graphSessionIndex (the prober's session list)", () => {
 				createdAt: "2026-09-22T00:00:00.000Z",
 				updatedAt: "2026-09-22T00:00:00.000Z",
 				propositions: 1,
+				groupId: null,
+				groupName: null,
 			},
 			{
 				id: "chat1",
@@ -224,6 +229,8 @@ describe("graphSessionIndex (the prober's session list)", () => {
 				createdAt: "2026-09-20T00:00:00.000Z",
 				updatedAt: "2026-09-21T00:00:00.000Z",
 				propositions: 3,
+				groupId: null,
+				groupName: null,
 			},
 			{
 				id: "gone",
@@ -232,6 +239,8 @@ describe("graphSessionIndex (the prober's session list)", () => {
 				createdAt: null,
 				updatedAt: null,
 				propositions: 1,
+				groupId: null,
+				groupName: null,
 			},
 		], "most recent first; the undatable record sinks and names itself by id");
 	});
