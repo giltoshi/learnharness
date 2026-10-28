@@ -1456,6 +1456,14 @@ describe("stream mapper", () => {
 		assert.deepEqual(run([{ type: "result", is_error: true, result: "Invalid API key · Please run /login" }]), [{ type: "error", message: "Invalid API key · Please run /login" }]);
 		assert.deepEqual(run([{ type: "result", is_error: false, result: "ok" }]), []);
 	});
+	it("ignores a streamed tool_use start (empty input) and input_json_delta; only the assistant line starts the tool", () => {
+		const ev = run([
+			{ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "t1", name: "mcp__lh__list_nodes", input: {} } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "" } } },
+			{ type: "assistant", message: { id: "m5", content: [{ type: "tool_use", id: "t1", name: "mcp__lh__list_nodes", input: { limit: 3 } }] } },
+		]);
+		assert.deepEqual(ev, [{ type: "tool-start", id: "t1", name: "list_nodes", input: { limit: 3 } }]);
+	});
 	it("ignores hooks, status, junk", () => {
 		assert.deepEqual(run([{ type: "system", subtype: "hook_started" }, "junk", null, 5]), []);
 	});
@@ -1589,7 +1597,8 @@ function fakeProc(lines: unknown[], exitCode = 0, stderr = ""): { spawn: SpawnPr
 	};
 	return { spawn, seen };
 }
-const base = { prompt: "merge my nodes", mcpUrl: "http://127.0.0.1:3000/api/cli/mcp/tok", workDir: "/tmp/lh-work", toolNames: ["list_nodes", "merge_nodes"] };
+// `bin` is pinned so the fake-spawn tests never shell out to where.exe.
+const base = { prompt: "merge my nodes", mcpUrl: "http://127.0.0.1:3000/api/cli/mcp/tok", workDir: "/tmp/lh-work", toolNames: ["list_nodes", "merge_nodes"], bin: "claude" };
 
 describe("buildCliArgs", () => {
 	it("is hardened, joins allowed tools into ONE comma value, and resumes only when asked", () => {
@@ -1789,11 +1798,14 @@ export function resolveClaudeBin(
 	if (platform !== "win32") return "claude";
 	for (const found of where()) {
 		if (found.toLowerCase().endsWith(".exe")) return found;
-		const exe = path.join(path.dirname(found), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+		const exe = path.win32.join(path.win32.dirname(found), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
 		if (exists(exe)) return exe;
 	}
 	return "claude";
 }
+
+/** Resolved once per process: `where.exe` is a blocking call and the install does not move mid-session. */
+let cachedBin: string | undefined;
 
 function defaultWhere(): string[] {
 	try {
@@ -1817,7 +1829,7 @@ export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEv
 		const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: "600000" };
 		delete env.ANTHROPIC_API_KEY;
 
-		const proc = (o.spawnProc ?? spawnProc)(o.bin ?? resolveClaudeBin(), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
+		const proc = (o.spawnProc ?? spawnProc)(o.bin ?? (cachedBin ??= resolveClaudeBin()), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
 		const onAbort = () => proc.kill();
 		if (o.signal?.aborted) onAbort();
 		else o.signal?.addEventListener("abort", onAbort, { once: true });
