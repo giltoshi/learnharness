@@ -14,6 +14,7 @@ import { describe, it, it as test } from "node:test";
 import {
 	applyClusterLabels,
 	arrowGeometry,
+	boxBounds,
 	isImpNodeId,
 	boxBlurRound,
 	fitTransform,
@@ -412,5 +413,17 @@ describe("applyClusterLabels (the label-only rename channel)", () => {
 			W, MAXL, measure,
 		);
 		assert.equal(changed, false);
+	});
+});
+
+describe("boxBounds (the group box's pure geometry)", () => {
+	test("pads the points' bounding box on every side", () => {
+		assert.deepEqual(boxBounds([{ x: 0, y: 0 }, { x: 10, y: 4 }], 2), { x: -2, y: -2, w: 14, h: 8 });
+	});
+	test("a single point still gets a box", () => {
+		assert.deepEqual(boxBounds([{ x: 5, y: 5 }], 3), { x: 2, y: 2, w: 6, h: 6 });
+	});
+	test("no points, no box", () => {
+		assert.equal(boxBounds([], 3), null);
 	});
 });

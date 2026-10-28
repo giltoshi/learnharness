@@ -70,6 +70,7 @@ import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, Uplo
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
+import { GROUP_NODE_PREFIX, isGroupNodeId, projectGroups } from "./group-projection.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
 import { useActivity } from "@/components/activity-dock";
 import { useServerEvent, useServerResync } from "@/components/server-events";
@@ -979,6 +980,22 @@ export function GraphView({
 	const cardRef = useRef<HTMLDivElement | null>(null);
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
 	const [selected, setSelected] = useState<Selection | null>(null);
+	// GROUP COLLAPSE (2026-10-27): which groups are collapsed into a blob.
+	// Starts empty on every load — groups start expanded. Display state only.
+	const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+	const toggleGroup = useCallback((groupId: string) => {
+		setCollapsedGroups((prev) => {
+			const next = new Set(prev);
+			if (next.has(groupId)) next.delete(groupId);
+			else next.add(groupId);
+			return next;
+		});
+	}, []);
+	// The renderer callbacks are built once — they reach the toggle and the
+	// current blob ids through refs.
+	const toggleGroupRef = useRef(toggleGroup);
+	toggleGroupRef.current = toggleGroup;
+	const blobIdsRef = useRef<ReadonlySet<string>>(new Set());
 	// The latest snapshot for the renderer's click callbacks (they are
 	// constructed once, so they read through this ref, never a closure).
 	const snapshotRef = useRef<GraphSnapshot | null>(null);
@@ -1346,6 +1363,11 @@ export function GraphView({
 			canvas,
 			{
 				onSelect: (nodeId, pos) => {
+					if (isGroupNodeId(nodeId)) {
+						// A collapsed group blob: a click expands it in place.
+						toggleGroupRef.current(nodeId.slice(GROUP_NODE_PREFIX.length));
+						return;
+					}
 					const snap = snapshotRef.current;
 					const node = snap?.nodes.find((n) => n.id === nodeId);
 					if (!snap || !node) return;
@@ -1415,17 +1437,28 @@ export function GraphView({
 		const renderer = rendererRef.current;
 		const positions = posRef.current;
 		if (!renderer || !snapshot || snapshot.nodes.length === 0 || !positions) return;
+		const projection = projectGroups(
+			{
+				nodes: snapshot.nodes,
+				propositions: snapshot.propositions,
+				edges: snapshot.edges,
+				logicalEdges: snapshot.logicalEdges,
+				impLinks: snapshot.impLinks,
+				clusters: snapshot.clusters,
+				groups: snapshot.groups,
+				sessionGroups: snapshot.sessionGroups,
+				collapsed: collapsedGroups,
+			},
+			(id) => positions.get(id) ?? { x: 0, y: 0 },
+		);
+		blobIdsRef.current = new Set(projection.blobIds);
 		renderer.setData({
-			nodes: snapshot.nodes.map((n) => ({
-				id: n.id,
-				x: positions.get(n.id)?.x ?? 0,
-				y: positions.get(n.id)?.y ?? 0,
-				label: n.name,
-			})),
-			edges: snapshot.edges.map((e) => ({ from: e.from, to: e.to })),
-			logicalEdges: snapshot.logicalEdges.map((e) => ({ from: e.from, to: e.to })),
-			impLinks: snapshot.impLinks,
-			clusters: snapshot.clusters.map((c) => ({ id: c.id, label: c.label, members: c.members })),
+			nodes: projection.nodes,
+			edges: projection.edges,
+			logicalEdges: projection.logicalEdges,
+			impLinks: projection.impLinks,
+			clusters: projection.clusters,
+			groupBoxes: projection.groupBoxes,
 			colors: {
 				node: tokenHex(NODE_COLOR_TOKEN),
 				edge: tokenHex("--ring"),
@@ -1435,7 +1468,7 @@ export function GraphView({
 			// Match the app typography (Geist via the body's stack).
 			fontFamily: getComputedStyle(document.body).fontFamily,
 		});
-	}, [snapshot, isEmpty]);
+	}, [snapshot, isEmpty, collapsedGroups]);
 
 	// Feed #2 — settings: just marks the frame dirty. No rebuild, no
 	// re-layout, no camera touch (the whole point of the new renderer).
@@ -1447,10 +1480,12 @@ export function GraphView({
 	// Feed #3 — visibility: hidden nodes drop out of rendering, picking,
 	// hover, AND labels; edges drop when either endpoint is hidden.
 	useEffect(() => {
-		rendererRef.current?.setVisible(query.trim() ? visibleIds : null);
+		// Collapsed group blobs are never search-filtered out (they stand
+		// for every member underneath).
+		rendererRef.current?.setVisible(query.trim() ? new Set([...visibleIds, ...blobIdsRef.current]) : null);
 		// The open detail card cannot outlive its node's visibility.
 		setSelected((sel) => (sel && visibleIds.has(sel.node.id) ? sel : null));
-	}, [visibleIds, query]);
+	}, [visibleIds, query, snapshot, collapsedGroups]);
 
 	// Feed #4 — region tuning. `isEmpty` in the deps (same as Feed #2):
 	// the settings fetch resolves BEFORE the snapshot creates the renderer,

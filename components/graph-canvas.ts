@@ -110,6 +110,33 @@ export interface CanvasCluster {
 	members: string[];
 }
 
+/** One EXPANDED group's box: a dashed rounded rectangle around its visible
+ *  members with the group's name above its top-left corner (2026-10-27
+ *  grouping). `level` is the nesting depth BELOW the group — outer boxes
+ *  pad wider so nested boxes never touch their parent's outline. */
+export interface CanvasGroupBox {
+	id: string;
+	label: string;
+	level: number;
+	members: string[];
+}
+
+/** The padded bounding box of a point set, or null when empty. */
+export function boxBounds(
+	points: ReadonlyArray<{ x: number; y: number }>,
+	pad: number,
+): { x: number; y: number; w: number; h: number } | null {
+	if (points.length === 0) return null;
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const p of points) {
+		if (p.x < minX) minX = p.x;
+		if (p.y < minY) minY = p.y;
+		if (p.x > maxX) maxX = p.x;
+		if (p.y > maxY) maxY = p.y;
+	}
+	return { x: minX - pad, y: minY - pad, w: maxX - minX + 2 * pad, h: maxY - minY + 2 * pad };
+}
+
 /** Theme colors, resolved to #rrggbb by the caller (canvas wants hex,
  *  and the renderer must not read CSS itself). */
 export interface CanvasColors {
@@ -131,6 +158,7 @@ export interface CanvasData {
 	 *  the premises/conclusion midpoint (owner, 2026-09-30). */
 	impLinks?: ReadonlyArray<{ id: string; premises: ReadonlyArray<string>; conclusion: string }>;
 	clusters: CanvasCluster[];
+	groupBoxes?: CanvasGroupBox[];
 	colors: CanvasColors;
 	/** Body font family (labels must match the app typography). */
 	fontFamily: string;
@@ -1598,6 +1626,43 @@ export class GraphCanvasRenderer {
 		this.regionRect = { minX, minY, w: spanX, h: spanY };
 	}
 
+	/** Expanded-group boxes: dashed rounded outline + name, drawn under the
+	 *  edges (after the region bitmap). Bounds are read from the live node
+	 *  positions each frame so boxes follow the sim exactly like the nodes;
+	 *  hidden (search-filtered) members don't stretch a box. Hairline stroke
+	 *  and screen-fixed label size (÷ k), like every other viewer-relative UI. */
+	private drawGroupBoxes(ctx: CanvasRenderingContext2D, k: number): void {
+		const boxes = this.data?.groupBoxes;
+		const settings = this.settings;
+		if (!boxes || boxes.length === 0 || !settings || !this.data) return;
+		const { nodeR } = this.world;
+		ctx.save();
+		ctx.lineWidth = 1 / k;
+		ctx.setLineDash([6 / k, 4 / k]);
+		ctx.font = `${LABEL_WEIGHT} ${settings.clusterLabelSize / k}px ${this.data.fontFamily}`;
+		ctx.textAlign = "left";
+		ctx.textBaseline = "bottom";
+		for (const box of boxes) {
+			const points: { x: number; y: number }[] = [];
+			for (const id of box.members) {
+				if (this.visible && !this.visible.has(id)) continue;
+				const n = this.nodeById.get(id);
+				if (n) points.push({ x: n.x, y: n.y });
+			}
+			const pad = nodeR * (6 + 4 * box.level);
+			const b = boxBounds(points, pad);
+			if (!b) continue;
+			const hue = clusterHue(box.id);
+			ctx.strokeStyle = `hsla(${hue}, 55%, 70%, 0.55)`;
+			ctx.beginPath();
+			ctx.roundRect(b.x, b.y, b.w, b.h, pad * 0.6);
+			ctx.stroke();
+			ctx.fillStyle = `hsla(${hue}, 55%, 78%, 0.9)`;
+			ctx.fillText(box.label, b.x + 4 / k, b.y - 3 / k);
+		}
+		ctx.restore();
+	}
+
 	/** THE draw function: every layer, one frame, one camera. All drawing
 	 *  happens in WORLD coordinates under the camera transform; nothing is
 	 *  recomputed per frame except layer styling. */
@@ -1645,6 +1710,10 @@ export class GraphCanvasRenderer {
 			ctx.imageSmoothingEnabled = true;
 			ctx.drawImage(this.regionCanvas, minX, minY, w, h);
 		}
+
+		// 2. Expanded-group boxes (2026-10-27): above the region tint, under
+		//    the edges and nodes.
+		this.drawGroupBoxes(ctx, k);
 
 		// 3. Edges: shafts + arrowheads from cached paths; width constant on
 		// screen (÷ k), geometry in world units (scales with the graph).
