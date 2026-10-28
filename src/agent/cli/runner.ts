@@ -78,9 +78,17 @@ export function resolveClaudeBin(
 /** Resolved once per process: `where.exe` is a blocking call and the install does not move mid-session. */
 let cachedBin: string | undefined;
 
+/** Caches only a real resolution: never the bare fallback, never an LH_CLAUDE_BIN override (read fresh). */
+function claudeBin(): string {
+	if (cachedBin) return cachedBin;
+	const bin = resolveClaudeBin();
+	if (bin !== "claude" && !process.env.LH_CLAUDE_BIN) cachedBin = bin;
+	return bin;
+}
+
 function defaultWhere(): string[] {
 	try {
-		return execFileSync("where.exe", ["claude"], { encoding: "utf-8" }).split(/\r?\n/).filter(Boolean);
+		return execFileSync("where.exe", ["claude"], { encoding: "utf-8" }).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 	} catch {
 		return [];
 	}
@@ -91,6 +99,9 @@ const NOT_FOUND = "Claude CLI not found. Install it from https://claude.com/clau
 export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEvent> {
 	fs.mkdirSync(o.workDir, { recursive: true });
 	const tmp = fs.mkdtempSync(path.join(o.tmpRoot ?? os.tmpdir(), "lh-cli-"));
+	let proc: CliProc | undefined;
+	let exited = false;
+	const onAbort = () => proc?.kill();
 	try {
 		const mcpConfigPath = path.join(tmp, "mcp.json");
 		const systemPromptPath = path.join(tmp, "system.md");
@@ -100,8 +111,8 @@ export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEv
 		const env: NodeJS.ProcessEnv = { ...process.env, MCP_TOOL_TIMEOUT: "600000" };
 		delete env.ANTHROPIC_API_KEY;
 
-		const proc = (o.spawnProc ?? spawnProc)(o.bin ?? (cachedBin ??= resolveClaudeBin()), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
-		const onAbort = () => proc.kill();
+		proc = (o.spawnProc ?? spawnProc)(o.bin ?? claudeBin(), buildCliArgs({ mcpConfigPath, systemPromptPath, toolNames: o.toolNames, resume: o.resume }), { cwd: o.workDir, env });
+		void proc.exit.then(() => { exited = true; }, () => { exited = true; });
 		if (o.signal?.aborted) onAbort();
 		else o.signal?.addEventListener("abort", onAbort, { once: true });
 		proc.writeStdin(o.prompt);
@@ -117,12 +128,13 @@ export async function* runCliTurn(o: RunCliTurnOptions): AsyncGenerator<CliRunEv
 			}
 		}
 		const code = await proc.exit;
-		o.signal?.removeEventListener("abort", onAbort);
 		if (code !== 0 && !sawError && !o.signal?.aborted) {
 			const err = proc.stderr();
 			yield { type: "error", message: /ENOENT|not recognized|not found/i.test(err) && code === -1 ? NOT_FOUND : `Claude CLI exited with code ${code}: ${err.trim().split("\n").slice(-5).join("\n")}` };
 		}
 	} finally {
+		o.signal?.removeEventListener("abort", onAbort);
+		if (proc && !exited) proc.kill();
 		fs.rmSync(tmp, { recursive: true, force: true });
 	}
 }

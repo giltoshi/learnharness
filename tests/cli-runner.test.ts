@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "node:test";
 import { buildCliArgs } from "../src/agent/cli/args.ts";
 import { resolveClaudeBin, runCliTurn, type CliProc, type SpawnProc } from "../src/agent/cli/runner.ts";
@@ -59,19 +61,20 @@ describe("resolveClaudeBin", () => {
 describe("runCliTurn", () => {
 	it("writes the MCP config, pipes the prompt on stdin, strips ANTHROPIC_API_KEY, sets the tool timeout, maps events", async () => {
 		process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
-		const { spawn, seen } = fakeProc([
-			{ type: "system", subtype: "init", session_id: "s1" },
-			{ type: "assistant", message: { id: "m", content: [{ type: "text", text: "done" }] } },
-			{ type: "result", is_error: false, result: "done" },
-		]);
-		const events = await collect(runCliTurn({ ...base, spawnProc: spawn }));
-		assert.deepEqual(events, [{ type: "session", id: "s1" }, { type: "text", delta: "done" }]);
-		assert.equal(seen.stdin, "merge my nodes");
-		assert.equal(seen.env.ANTHROPIC_API_KEY, undefined);
-		assert.equal(seen.env.MCP_TOOL_TIMEOUT, "600000");
-		assert.equal(seen.cwd, "/tmp/lh-work");
-		assert.deepEqual(JSON.parse(seen.cfg), { mcpServers: { lh: { type: "http", url: base.mcpUrl } } });
-		delete process.env.ANTHROPIC_API_KEY;
+		try {
+			const { spawn, seen } = fakeProc([
+				{ type: "system", subtype: "init", session_id: "s1" },
+				{ type: "assistant", message: { id: "m", content: [{ type: "text", text: "done" }] } },
+				{ type: "result", is_error: false, result: "done" },
+			]);
+			const events = await collect(runCliTurn({ ...base, spawnProc: spawn }));
+			assert.deepEqual(events, [{ type: "session", id: "s1" }, { type: "text", delta: "done" }]);
+			assert.equal(seen.stdin, "merge my nodes");
+			assert.equal(seen.env.ANTHROPIC_API_KEY, undefined);
+			assert.equal(seen.env.MCP_TOOL_TIMEOUT, "600000");
+			assert.equal(seen.cwd, "/tmp/lh-work");
+			assert.deepEqual(JSON.parse(seen.cfg), { mcpServers: { lh: { type: "http", url: base.mcpUrl } } });
+		} finally { delete process.env.ANTHROPIC_API_KEY; }
 	});
 	it("passes --resume when given a session id", async () => {
 		const { spawn, seen } = fakeProc([]);
@@ -100,5 +103,43 @@ describe("runCliTurn", () => {
 		ac.abort();
 		await collect(runCliTurn({ ...base, spawnProc: spawn, signal: ac.signal }));
 		assert.equal(seen.killed, true);
+	});
+	it("removes its temp dir after a normal run", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-root-"));
+		try {
+			const { spawn } = fakeProc([{ type: "system", session_id: "s" }]);
+			await collect(runCliTurn({ ...base, spawnProc: spawn, tmpRoot: root }));
+			assert.deepEqual(fs.readdirSync(root), []);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	});
+	it("a non-zero exit after an error result adds no second error event", async () => {
+		const { spawn } = fakeProc([{ type: "result", is_error: true, result: "bad" }], 1, "boom");
+		const events = await collect(runCliTurn({ ...base, spawnProc: spawn }));
+		assert.equal(events.filter((e) => e.type === "error").length, 1);
+	});
+	it("kills the child when the consumer stops early", async () => {
+		let killed = false;
+		const spawn: SpawnProc = () => ({
+			lines: (async function* () { yield JSON.stringify({ type: "system", session_id: "s" }); await new Promise(() => {}); })(),
+			stderr: () => "", kill: () => { killed = true; }, exit: new Promise(() => {}), writeStdin: () => {},
+		});
+		const it2 = runCliTurn({ ...base, spawnProc: spawn });
+		await it2.next();
+		await it2.return(undefined);
+		assert.equal(killed, true);
+	});
+	it("removes the abort listener even when lines throws", async () => {
+		const ac = new AbortController();
+		let added = 0, removed = 0;
+		const add = ac.signal.addEventListener.bind(ac.signal), rem = ac.signal.removeEventListener.bind(ac.signal);
+		ac.signal.addEventListener = ((...a: Parameters<typeof add>) => { added++; return add(...a); }) as typeof add;
+		ac.signal.removeEventListener = ((...a: Parameters<typeof rem>) => { removed++; return rem(...a); }) as typeof rem;
+		const spawn: SpawnProc = () => ({
+			lines: (async function* () { throw new Error("pipe broke"); })(),
+			stderr: () => "", kill: () => {}, exit: Promise.resolve(0), writeStdin: () => {},
+		});
+		await assert.rejects(collect(runCliTurn({ ...base, spawnProc: spawn, signal: ac.signal })), /pipe broke/);
+		assert.equal(added, 1);
+		assert.equal(removed, 1);
 	});
 });
