@@ -7,7 +7,9 @@ const tools: CliTool[] = [
 	{ name: "boom", description: "Fails", inputSchema: { type: "object" }, run: async () => { throw new Error("kaboom"); } },
 	{ name: "soft", description: "Soft fail", inputSchema: { type: "object" }, run: async () => ({ text: "refused", isError: true }) },
 ];
-const call = (method: string, params?: unknown, id: number | undefined = 1) => handleMcpMessage({ jsonrpc: "2.0", id, method, params }, tools);
+const call = (method: string, params?: unknown) => handleMcpMessage({ jsonrpc: "2.0", id: 1, method, params }, tools);
+// Builds the message WITHOUT an `id` key (a true JSON-RPC notification).
+const callNoId = (method: string, params?: unknown) => handleMcpMessage({ jsonrpc: "2.0", method, params }, tools);
 
 describe("handleMcpMessage", () => {
 	it("initialize echoes the client's protocol version and advertises tools", async () => {
@@ -15,7 +17,11 @@ describe("handleMcpMessage", () => {
 		assert.deepEqual(r, { jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "learnharness", version: "1" } } });
 	});
 	it("notifications (no id) return null", async () => {
-		assert.equal(await call("notifications/initialized", undefined, undefined), null);
+		assert.equal(await callNoId("notifications/initialized"), null);
+		assert.equal(await callNoId("ping"), null);
+	});
+	it("a notifications/* method WITH an id also returns null (lenient)", async () => {
+		assert.equal(await call("notifications/initialized"), null);
 	});
 	it("tools/list returns name, description, inputSchema", async () => {
 		const r = (await call("tools/list")) as { result: { tools: Array<{ name: string }> } };
@@ -45,5 +51,10 @@ describe("handleMcpMessage", () => {
 	it("a non-object or batch body is -32600", async () => {
 		const r = (await handleMcpMessage([{}], tools)) as { error: { code: number } };
 		assert.equal(r.error.code, -32600);
+	});
+	it("a null or string body is -32600 with a null id", async () => {
+		for (const body of [null, "hello"]) {
+			assert.deepEqual(await handleMcpMessage(body, tools), { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } });
+		}
 	});
 });

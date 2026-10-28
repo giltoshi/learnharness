@@ -8,10 +8,12 @@ const nodes = [n("n_a", "Time value of money", { aliases: ["TVM"] }), n("n_b", "
 const chains: GraphChain[] = [{ id: "arg_1", premises: ["n_a", "n_b"], conclusion: "n_c", createdAt: "t", provenance: [{ chatId: "c1", messageId: "m" }] }];
 const chatList: ChatSummary[] = [{ id: "c1", title: "FINA 411 wk1", createdAt: "t", updatedAt: "2026-01-02", kind: "teach", messageCount: 4, phase: "teach", pendingQuestion: false, pendingProblem: false }];
 
-function setup(decision: CliApprovalDecision = { approved: true }) {
+function setup(decision: CliApprovalDecision = { approved: true }, over: { nodes?: GraphNode[]; chains?: GraphChain[] } = {}) {
+	const gNodes = over.nodes ?? nodes;
+	const gChains = over.chains ?? chains;
 	const calls = { approvals: [] as CliApprovalRequest[], merges: [] as unknown[], deletes: [] as string[][], chatDeletes: [] as unknown[], renames: [] as unknown[] };
 	const deps: CliToolDeps = {
-		graph: () => ({ nodes, chains }),
+		graph: () => ({ nodes: gNodes, chains: gChains }),
 		chats: () => chatList,
 		chatTitles: () => ({ c1: "FINA 411 wk1", c2: "Other" }),
 		renameChat: (id, title) => { calls.renames.push([id, title]); return { ok: true, value: null }; },
@@ -109,5 +111,80 @@ describe("cli tools", () => {
 		assert.equal(calls.chatDeletes.length, 0);
 		const bad = await tools.get("delete_chats")!.run({ ids: ["c1"], mode: "bogus" });
 		assert.equal(bad.isError, true);
+	});
+	it("search_nodes says when matches exceed limit", async () => {
+		const { tools } = setup();
+		const r = await tools.get("search_nodes")!.run({ query: "statement", limit: 2 });
+		assert.match(r.text, /3 matches \(showing first 2\)/);
+		assert.equal(r.text.split("\n").length, 3);
+		assert.doesNotMatch((await tools.get("search_nodes")!.run({ query: "statement" })).text, /showing/);
+	});
+	it("list_nodes and search_nodes cap limit at 500", async () => {
+		const many = Array.from({ length: 600 }, (_, i) => n(`n_${i}`, `Node ${i}`));
+		const { tools } = setup({ approved: true }, { nodes: many });
+		const l = await tools.get("list_nodes")!.run({ limit: 100000 });
+		assert.equal(l.text.split("\n").length, 1 + 500);
+		const s = await tools.get("search_nodes")!.run({ query: "node", limit: 100000 });
+		assert.match(s.text, /600 matches \(showing first 500\)/);
+		assert.equal(s.text.split("\n").length, 1 + 500);
+	});
+	it("get_node caps chain lines at 50 with a trailing count", async () => {
+		const many: GraphChain[] = Array.from({ length: 53 }, (_, i) => ({ id: `arg_${i}`, premises: ["n_a"], conclusion: "n_b", createdAt: "t", provenance: [] }));
+		const { tools } = setup({ approved: true }, { chains: many });
+		const r = await tools.get("get_node")!.run({ id: "n_a" });
+		assert.equal(r.text.split("\n").filter((l) => l.includes("⟹")).length, 50);
+		assert.match(r.text, /… and 3 more/);
+	});
+	it("get_node lists a chain id once even if it appears twice", async () => {
+		const dup = [chains[0]!, chains[0]!];
+		const { tools } = setup({ approved: true }, { chains: dup });
+		const r = await tools.get("get_node")!.run({ id: "n_a" });
+		assert.match(r.text, /Chains \(1 chain\)/);
+		assert.equal(r.text.split("\n").filter((l) => l.includes("⟹")).length, 1);
+	});
+	it("delete_nodes with no known ids is an isError result and requests no approval", async () => {
+		const { tools, calls } = setup();
+		const r = await tools.get("delete_nodes")!.run({ ids: ["n_x", "n_y"] });
+		assert.equal(r.isError, true);
+		assert.match(r.text, /n_x/);
+		assert.match(r.text, /n_y/);
+		assert.equal(calls.approvals.length, 0);
+		assert.equal(calls.deletes.length, 0);
+	});
+	it("delete_nodes with some unknown ids still asks, listing the unknown as skipped", async () => {
+		const { tools, calls } = setup();
+		await tools.get("delete_nodes")!.run({ ids: ["n_a", "n_x"] });
+		assert.equal(calls.approvals.length, 1);
+		assert.ok(calls.approvals[0]!.lines.some((l) => l.includes("n_x") && /skipped/.test(l)));
+	});
+	it("delete_nodes dedupes ids, rejects empty ids without approval, and a rejection writes nothing", async () => {
+		const a = setup();
+		await a.tools.get("delete_nodes")!.run({ ids: ["n_a", "n_a"] });
+		assert.deepEqual(a.calls.deletes, [["n_a"]]);
+		const b = setup();
+		const empty = await b.tools.get("delete_nodes")!.run({ ids: [] });
+		assert.equal(empty.isError, true);
+		assert.equal(b.calls.approvals.length, 0);
+		const c = setup({ approved: false });
+		const rej = await c.tools.get("delete_nodes")!.run({ ids: ["n_a"] });
+		assert.equal(rej.isError, true);
+		assert.equal(c.calls.approvals.length, 1);
+		assert.equal(c.calls.deletes.length, 0);
+	});
+	it("delete_chats with no known chat ids is an isError result and requests no approval", async () => {
+		const { tools, calls } = setup();
+		const r = await tools.get("delete_chats")!.run({ ids: ["zz1", "zz2"], mode: "preserve-graph" });
+		assert.equal(r.isError, true);
+		assert.match(r.text, /zz1/);
+		assert.equal(calls.approvals.length, 0);
+		assert.equal(calls.chatDeletes.length, 0);
+	});
+	it("merge_nodes falls back to the proposed identity per blank edited field", async () => {
+		const a = setup({ approved: true, edit: { name: "  ", statement: "Edited statement" } });
+		await a.tools.get("merge_nodes")!.run({ ids: ["n_a", "n_b"], name: "Proposed", statement: "Proposed statement" });
+		assert.deepEqual(a.calls.merges, [{ ids: ["n_a", "n_b"], name: "Proposed", statement: "Edited statement" }]);
+		const b = setup({ approved: true, edit: { name: "Edited", statement: "" } });
+		await b.tools.get("merge_nodes")!.run({ ids: ["n_a", "n_b"], name: "Proposed", statement: "Proposed statement" });
+		assert.deepEqual(b.calls.merges, [{ ids: ["n_a", "n_b"], name: "Edited", statement: "Proposed statement" }]);
 	});
 });

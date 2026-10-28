@@ -27,6 +27,8 @@ export const CLI_TOOL_NAMES = ["list_nodes", "search_nodes", "get_node", "list_c
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const num = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback);
+const MAX_LIMIT = 500;
+const MAX_CHAINS = 50;
 const fail = (text: string): CliToolResult => ({ text, isError: true });
 const ok = (text: string): CliToolResult => ({ text });
 const clip = (s: string, n = 160): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -45,7 +47,7 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 			async run(a) {
 				const chatId = str(a.chatId);
 				const all = d.graph().nodes.filter((n) => chatId === "" || n.provenance.some((p) => p.chatId === chatId));
-				const limit = num(a.limit, 100);
+				const limit = Math.min(num(a.limit, 100), MAX_LIMIT);
 				const offset = num(a.offset, 0);
 				const page = all.slice(offset, offset + limit);
 				return ok(`${plural(all.length, "node")}${all.length > page.length ? ` (showing ${page.length} from ${offset})` : ""}\n${page.map(nodeLine).join("\n")}`);
@@ -60,8 +62,9 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 				if (q === "") return fail("query is required");
 				const hits = d.graph().nodes.filter((n) => [n.name, n.statement, ...n.aliases].some((s) => s.toLowerCase().includes(q)));
 				if (hits.length === 0) return ok(`No nodes match "${str(a.query)}"`);
-				const limit = num(a.limit, 50);
-				return ok(`${plural(hits.length, "match")}\n${hits.slice(0, limit).map((n) => `${nodeLine(n)} | ${clip(n.statement)}`).join("\n")}`);
+				const limit = Math.min(num(a.limit, 50), MAX_LIMIT);
+				const shown = hits.slice(0, limit);
+				return ok(`${plural(hits.length, "match")}${hits.length > shown.length ? ` (showing first ${shown.length})` : ""}\n${shown.map((n) => `${nodeLine(n)} | ${clip(n.statement)}`).join("\n")}`);
 			},
 		},
 		{
@@ -75,14 +78,16 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 				const names = new Map(nodes.map((n) => [n.id, n.name]));
 				const titles = d.chatTitles();
 				const sources = [...new Set(node.provenance.map((p) => p.chatId))].map((c) => titles[c] ?? c);
-				const mine = chains.filter((c) => c.conclusion === node.id || c.premises.includes(node.id));
+				const mine = [...new Map(chains.filter((c) => c.conclusion === node.id || c.premises.includes(node.id)).map((c) => [c.id, c])).values()];
+				const chainLines = mine.slice(0, MAX_CHAINS).map((c) => `  ${c.premises.map((p) => names.get(p) ?? p).join(" + ")} ⟹ ${names.get(c.conclusion) ?? c.conclusion}`);
+				if (mine.length > MAX_CHAINS) chainLines.push(`  … and ${mine.length - MAX_CHAINS} more`);
 				return ok([
 					`${node.id} | ${node.name}`,
 					`Statement: ${node.statement}`,
 					`Aliases: ${node.aliases.length ? node.aliases.join(" / ") : "(none)"}`,
 					`From: ${sources.length ? sources.join(", ") : "(none)"}`,
-					`Chains (${plural(new Set(mine.map((c) => c.id)).size, "chain")}):`,
-					...[...new Map(mine.map((c) => [c.id, c])).values()].map((c) => `  ${c.premises.map((p) => names.get(p) ?? p).join(" + ")} ⟹ ${names.get(c.conclusion) ?? c.conclusion}`),
+					`Chains (${plural(mine.length, "chain")}):`,
+					...chainLines,
 				].join("\n"));
 			},
 		},
@@ -123,6 +128,8 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 				const ids = [...new Set(strList(a.ids))];
 				if (ids.length === 0) return fail("ids is required");
 				const { nodes, chains } = d.graph();
+				const unknown = ids.filter((id) => !nodes.some((x) => x.id === id));
+				if (unknown.length === ids.length) return fail(`No such nodes: ${unknown.join(", ")}. Nothing to delete.`);
 				const lines = ids.map((id) => {
 					const n = nodes.find((x) => x.id === id);
 					return n ? `Delete "${n.name}" (${id}) — ${plural(chainsTouching(id, chains), "chain")} removed` : `${id} — not found, will be skipped`;
@@ -169,6 +176,9 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 				const mode = a.mode;
 				if (ids.length === 0) return fail("ids is required");
 				if (mode !== "preserve-graph" && mode !== "delete-nodes") return fail('mode must be "preserve-graph" or "delete-nodes"');
+				const known = new Set(d.chats().map((c) => c.id));
+				const unknownChats = ids.filter((id) => !known.has(id));
+				if (unknownChats.length === ids.length) return fail(`No such chats: ${unknownChats.join(", ")}. Nothing to delete.`);
 				const titles = d.chatTitles();
 				const decision = await d.requestApproval({
 					tool: "delete_chats",
