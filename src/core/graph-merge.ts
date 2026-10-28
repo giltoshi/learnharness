@@ -60,8 +60,9 @@ function remapChains(chains: GraphChain[], merged: ReadonlySet<string>, newId: s
 	for (const c of chains) {
 		if (!touches(c)) { out.push(c); continue; }
 		const conclusion = merged.has(c.conclusion) ? newId : c.conclusion;
-		const premises = [...new Set(c.premises.map((p) => (merged.has(p) ? newId : p)))].filter((p) => p !== conclusion);
-		if (premises.length === 0) { dropped.add(c.id); continue; }
+		const premises = [...new Set(c.premises.map((p) => (merged.has(p) ? newId : p)))];
+		// Self-referential: the merged node is both a premise and the conclusion.
+		if (premises.includes(conclusion)) { dropped.add(c.id); continue; }
 		const key = chainKey(premises, conclusion);
 		const id = idOfKey.get(key) ?? c.id;
 		idOfKey.set(key, id);

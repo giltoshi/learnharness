@@ -105,6 +105,34 @@ describe("mergeNodes", () => {
 		assert.deepEqual(Object.keys(state.positions), ["n_c"]);
 	});
 
+	it("drops a chain whose merged node is both a premise and the conclusion, even with other premises", () => {
+		const chains = [chain("arg_1", ["n_a", "n_c"], "n_b")];
+		const nodes = [node("n_a", "A"), node("n_b", "B"), node("n_c", "C")];
+		const preview = previewMerge(fakeStore(nodes, chains).store, ["n_a", "n_b"]);
+		assert.equal(preview.chainsDropped, 1);
+		assert.equal(preview.chainsRewritten, 0);
+		const { store, state } = fakeStore(nodes, chains);
+		const r = mergeNodes(store, input, { newId: "n_new" });
+		assert.ok(r.ok);
+		if (r.ok) {
+			assert.equal(r.value.chainsDropped, 1);
+			assert.equal(r.value.chainsRewritten, 0);
+		}
+		assert.deepEqual(state.chains, []);
+	});
+
+	it("prunes the position of a chain id re-homed under an earlier colliding id, keeps the survivor's", () => {
+		// arg_1 and arg_2 collide after remap and both live on as arg_1; arg_2 no
+		// longer appears in the output, so its position is dead and pruned.
+		const { store, state } = fakeStore(
+			[node("n_a", "A"), node("n_b", "B")],
+			[chain("arg_1", ["n_a"], "n_x"), chain("arg_2", ["n_b"], "n_x")],
+			{ arg_1: { x: 1, y: 1 }, arg_2: { x: 2, y: 2 } },
+		);
+		mergeNodes(store, input, { newId: "n_new" });
+		assert.deepEqual(Object.keys(state.positions), ["arg_1"]);
+	});
+
 	it("rejects: fewer than two distinct existing ids, unknown ids, blank identity", () => {
 		const { store, state } = fakeStore([node("n_a", "A"), node("n_b", "B")], []);
 		const before = JSON.stringify(state);
