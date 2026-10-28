@@ -3,16 +3,24 @@
  * semantics, same reasoning as server/graph.ts deleteGraphNode), ONE
  * snapshot per call, ONE undo point. Pure orchestration over injected deps
  * so tests need no fs; src/server/cli.ts wires the real ones.
+ *
+ * Group changes share the undo point but skip the gate and settle: they
+ * only write groups.json, never a node or chain ledger.
  */
 import { randomUUID } from "node:crypto";
 import type { CliOpResult } from "../core/contracts/cli.ts";
-import type { GraphStore, CliStateStore } from "../core/ports.ts";
+import type { GroupsState } from "../core/contracts/graph.ts";
+import type { ChatStore, GraphStore, CliStateStore } from "../core/ports.ts";
 import { deleteNodeTraces } from "../core/graph-deletion.ts";
+import { addSessionsOp, createGroupOp, deleteGroupOp, removeSessionsOp, renameGroupOp } from "../core/group-ops.ts";
+import { GroupError } from "../core/groups.ts";
 import { mergeNodes, type MergeInput, type MergeStats } from "../core/graph-merge.ts";
 import { restoreLedgers, snapshotLedgers } from "../core/ledger-snapshot.ts";
 
 export interface GraphOpsDeps {
 	graphStore: GraphStore;
+	/** Session ids the group ops may name (group-ops requireKnown). */
+	chatStore: ChatStore;
 	state: Pick<CliStateStore, "readUndo" | "writeUndo" | "clearUndo">;
 	extractionBusy(): boolean;
 	/** graphRevision(): moves on any graph write. */
@@ -38,7 +46,45 @@ export function createGraphOps(d: GraphOpsDeps) {
 		return result;
 	}
 
+	/** Snapshot → run a group op → record the undo point only if groups.json changed. */
+	function withGroupUndo<T extends { message: string }>(label: (v: T, before: GroupsState) => string, run: () => T): CliOpResult<{ message: string; changed: boolean }> {
+		const before = snapshotLedgers(d.graphStore);
+		let value: T;
+		try {
+			value = run();
+		} catch (err) {
+			if (err instanceof GroupError) return { ok: false, code: err.code, error: err.message };
+			throw err;
+		}
+		const changed = JSON.stringify(d.graphStore.readGroups()) !== JSON.stringify(before.groups);
+		if (changed) d.state.writeUndo({ id: randomUUID(), label: label(value, before.groups!), at: now().toISOString(), revisionAfter: d.revision(), ledgers: before });
+		return { ok: true, value: { message: value.message, changed } };
+	}
+	const deps = { chatStore: d.chatStore, graphStore: d.graphStore };
+	const groupName = (state: GroupsState, id: string) => state.groups.find((g) => g.id === id)?.name ?? id;
+	const sessions = (n: number) => `${n} session${n === 1 ? "" : "s"}`;
+
 	return {
+		createGroup(input: { name: string; parentGroupId?: string; sessionIds?: string[] }) {
+			return withGroupUndo((v) => `Created group "${groupName(d.graphStore.readGroups(), v.groupId)}"`, () => createGroupOp(deps, input));
+		},
+
+		addSessionsToGroup(groupId: string, sessionIds: string[]) {
+			return withGroupUndo((v, before) => `Moved ${sessions(v.movedSessions)} into "${groupName(before, groupId)}"`, () => addSessionsOp(deps, groupId, sessionIds));
+		},
+
+		removeSessionsFromGroup(sessionIds: string[]) {
+			return withGroupUndo((v) => `Removed ${sessions(v.removedSessions)} from ${v.removedSessions === 1 ? "its group" : "their groups"}`, () => removeSessionsOp(deps, sessionIds));
+		},
+
+		renameGroup(groupId: string, name: string) {
+			return withGroupUndo((_v, before) => `Renamed group "${groupName(before, groupId)}" to "${groupName(d.graphStore.readGroups(), groupId)}"`, () => renameGroupOp(deps, groupId, name));
+		},
+
+		deleteGroup(groupId: string) {
+			return withGroupUndo((_v, before) => `Deleted group "${groupName(before, groupId)}"`, () => deleteGroupOp(deps, groupId));
+		},
+
 		mergeNodes(input: MergeInput): CliOpResult<{ newId: string } & MergeStats> {
 			const label = `Merged ${new Set(input.ids).size} nodes into "${input.name.trim()}"`;
 			return withUndo(() => label, () => mergeNodes(d.graphStore, input), () => true);

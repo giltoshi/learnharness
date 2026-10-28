@@ -3,7 +3,7 @@
  * turn streams to the browser, the plan-limit snapshot, and the graph undo
  * record. Pure types; the reducer is core/cli-chat.ts.
  */
-import type { CoverageEntry, GraphChain, GraphNode, Position, SessionCheckpoint } from "./graph.ts";
+import type { CoverageEntry, GraphChain, GraphNode, GroupsState, Position, SessionCheckpoint } from "./graph.ts";
 
 /** One plan window as reported by the CLI's rate_limit_event. */
 export interface UsageWindow {
@@ -97,13 +97,15 @@ export interface CliApprovalRequest {
 
 export type CliApprovalDecision = { approved: false } | { approved: true; edit?: CliApprovalEdit };
 
-/** The five rewritable graph ledgers, captured verbatim. */
+/** The five rewritable graph ledgers plus groups.json, captured verbatim. */
 export interface LedgerSnapshot {
 	nodes: GraphNode[];
 	chains: GraphChain[];
 	coverage: CoverageEntry[];
 	checkpoints: SessionCheckpoint[];
 	positions: Record<string, Position>;
+	/** Absent on undo records persisted before groups joined the snapshot. */
+	groups?: GroupsState;
 }
 
 /** The single latest undo point. */

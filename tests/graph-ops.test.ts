@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { GraphChain, GraphNode, Position } from "../src/core/contracts.ts";
-import type { UndoRecord } from "../src/core/contracts.ts";
-import type { GraphStore } from "../src/core/ports.ts";
+import type { GroupsState, UndoRecord } from "../src/core/contracts.ts";
+import type { ChatStore, GraphStore } from "../src/core/ports.ts";
 import { createGraphOps } from "../src/server/graph-ops.ts";
 
 const node = (id: string, name: string): GraphNode => ({ id, name, statement: `${name}!`, aliases: [], createdAt: "2026-01-01T00:00:00.000Z", provenance: [{ chatId: "c1", messageId: id }] });
 const chain = (id: string, premises: string[], conclusion: string): GraphChain => ({ id, premises, conclusion, createdAt: "2026-01-01T00:00:00.000Z", provenance: [{ chatId: "c1", messageId: id }] });
 
 function setup(opts: { busy?: boolean; settleBumps?: boolean; positions?: Record<string, Position> } = {}) {
-	const s = { nodes: [node("n_a", "A"), node("n_b", "B"), node("n_c", "C")], chains: [chain("arg_1", ["n_a"], "n_c")], coverage: [] as never[], checkpoints: [] as never[], positions: (opts.positions ?? {}) as Record<string, Position> };
+	const s = { nodes: [node("n_a", "A"), node("n_b", "B"), node("n_c", "C")], chains: [chain("arg_1", ["n_a"], "n_c")], coverage: [] as never[], checkpoints: [] as never[], positions: (opts.positions ?? {}) as Record<string, Position>, groups: { groups: [], sessionGroups: {} } as GroupsState };
 	let revision = 1;
 	let undo: UndoRecord | null = null;
 	let settled = 0;
@@ -18,9 +18,13 @@ function setup(opts: { busy?: boolean; settleBumps?: boolean; positions?: Record
 		readNodes: () => s.nodes, readChains: () => s.chains, readCoverage: () => s.coverage, readCheckpoints: () => s.checkpoints, readPositions: () => s.positions,
 		writePositions: (p: Record<string, Position>) => { s.positions = p; revision++; },
 		rewriteLedgers: (n: Partial<typeof s>) => { Object.assign(s, n); revision++; },
+		readGroups: () => s.groups, writeGroups: (g: GroupsState) => { s.groups = g; revision++; },
+		readSources: () => [],
 	} as unknown as GraphStore;
+	const chatStore = { listChats: () => [{ id: "c1", title: "Week 1" }, { id: "c2", title: "Week 2" }] } as unknown as ChatStore;
 	const ops = createGraphOps({
 		graphStore,
+		chatStore,
 		state: { readUndo: () => undo, writeUndo: (r) => { undo = r; }, clearUndo: () => { undo = null; } },
 		extractionBusy: () => busy,
 		revision: () => revision,
@@ -113,6 +117,74 @@ describe("graph ops", () => {
 		const r = t.ops.mergeNodes({ ids: ["n_a"], name: "x", statement: "y" });
 		assert.equal(r.ok, false);
 		assert.equal(t.getUndo(), null);
+	});
+	it("group changes record an undo point without the busy gate or settle, and undo restores groups.json", () => {
+		const t = setup({ busy: true });
+		const r = t.ops.createGroup({ name: "FINA 411", sessionIds: ["c1"] });
+		assert.ok(r.ok && r.value.changed);
+		assert.match(r.ok ? r.value.message : "", /Created group 'FINA 411'.*Moved 1 session \(3 nodes\)/);
+		assert.equal(t.settled(), 0);
+		assert.equal(t.getUndo()?.label, 'Created group "FINA 411"');
+		t.setBusy(false);
+		const u = t.ops.undo();
+		assert.ok(u.ok);
+		assert.deepEqual(t.s.groups, { groups: [], sessionGroups: {} });
+	});
+	it("add / remove / rename / delete each record an undo point with a label", () => {
+		const t = setup();
+		const c = t.ops.createGroup({ name: "FINA" });
+		const id = t.s.groups.groups[0]!.id;
+		assert.ok(c.ok);
+		const add = t.ops.addSessionsToGroup(id, ["c1", "c2"]);
+		assert.ok(add.ok && add.value.changed);
+		assert.equal(t.getUndo()?.label, 'Moved 2 sessions into "FINA"');
+		const rm = t.ops.removeSessionsFromGroup(["c2"]);
+		assert.ok(rm.ok && rm.value.changed);
+		assert.equal(t.getUndo()?.label, "Removed 1 session from its group");
+		const rn = t.ops.renameGroup(id, "FINA 411");
+		assert.ok(rn.ok);
+		assert.equal(t.getUndo()?.label, 'Renamed group "FINA" to "FINA 411"');
+		const del = t.ops.deleteGroup(id);
+		assert.ok(del.ok && /Deleted group 'FINA 411'/.test(del.value.message));
+		assert.equal(t.getUndo()?.label, 'Deleted group "FINA 411"');
+		assert.ok(t.ops.undo().ok);
+		assert.equal(t.s.groups.groups[0]?.name, "FINA 411");
+		assert.equal(t.s.groups.sessionGroups.c1, id);
+	});
+	it("a group change that changes nothing records no undo point", () => {
+		const t = setup();
+		const rm = t.ops.removeSessionsFromGroup(["c1"]);
+		assert.ok(rm.ok && !rm.value.changed);
+		assert.equal(t.getUndo(), null);
+	});
+	it("maps GroupError to { ok:false, code, error } and writes nothing", () => {
+		const t = setup();
+		const r = t.ops.addSessionsToGroup("grp_nope", ["c1"]);
+		assert.equal(r.ok, false);
+		assert.equal(r.ok ? null : r.code, "unknown_group");
+		const bad = t.ops.createGroup({ name: "  " });
+		assert.equal(bad.ok ? null : bad.code, "invalid_name");
+		const unk = t.ops.createGroup({ name: "A", sessionIds: ["c_zzz"] });
+		assert.equal(unk.ok ? null : unk.code, "unknown_session");
+		assert.deepEqual(t.s.groups, { groups: [], sessionGroups: {} });
+		assert.equal(t.getUndo(), null);
+	});
+	it("undoing a merge restores groups exactly", () => {
+		const t = setup();
+		t.ops.createGroup({ name: "FINA", sessionIds: ["c1"] });
+		const grouped = structuredClone(t.s.groups);
+		ops_merge(t);
+		t.s.groups = { groups: [], sessionGroups: {} }; // direct edit: no revision bump, so the merge's record stays current
+		assert.ok(t.ops.undo().ok);
+		assert.deepEqual(t.s.groups, grouped);
+	});
+	it("an old undo record without groups still restores the ledgers", () => {
+		const t = setup();
+		ops_merge(t);
+		const rec = t.getUndo() as UndoRecord;
+		delete (rec.ledgers as { groups?: GroupsState }).groups;
+		assert.ok(t.ops.undo().ok);
+		assert.deepEqual(t.s.nodes.map((n) => n.id).sort(), ["n_a", "n_b", "n_c"]);
 	});
 });
 
