@@ -77,7 +77,7 @@ test("graph: reads never write — no sidecar appears from reading alone", () =>
 	assert.ok(!fs.existsSync(GRAPH_FORMAT_FILE), "reads did NOT create the sidecar (lazy = write-side only)");
 });
 
-test("graph: the first ledger append creates the sidecar at version 1", () => {
+test("graph: the first ledger append creates the sidecar at version 2", () => {
 	graphStore.appendNode({
 		id: "n_stamp0",
 		name: "Stamps",
@@ -87,7 +87,7 @@ test("graph: the first ledger append creates the sidecar at version 1", () => {
 		provenance: [],
 	});
 	assert.ok(fs.existsSync(GRAPH_FORMAT_FILE), "the first write stamped the family");
-	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 1);
+	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 2);
 	assert.equal(graphStore.readNodes().length, 1, "the ledger reads back with the sidecar present");
 });
 
@@ -104,7 +104,7 @@ test("render-settings: its write stamps the family sidecar too", () => {
 	assert.ok(!fs.existsSync(GRAPH_FORMAT_FILE));
 	const written = writeRenderSettings({ sizeUnits: "world", nodeSize: 3 });
 	assert.equal(written.nodeSize, 3);
-	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 1, "the render-settings write stamped the family");
+	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 2, "the render-settings write stamped the family");
 });
 
 // ── the fixtures stay the legacy pin: golden data reads unstamped ───────────

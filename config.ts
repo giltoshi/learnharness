@@ -79,6 +79,10 @@ export const SOURCES_FILE = path.join(PATHS.graph, "sources.json");
  *  {x,y} resting positions from the incremental settle (core/layout.ts).
  *  Carries an updatedAt stamp for future live-physics conflict handling. */
 export const POSITIONS_FILE = path.join(PATHS.graph, "positions.json");
+/** Session groups (src/core/groups.ts): ONE JSON file, read-modify-write
+ *  like sources.json — { groups, sessionGroups }. Metadata only; the
+ *  ledgers never reference it. Versioned by the format.json family stamp. */
+export const GROUPS_FILE = path.join(PATHS.graph, "groups.json");
 
 /**
  * Graph render settings (the settings-panel controls): one small JSON blob,
@@ -88,7 +92,7 @@ export const RENDER_SETTINGS_FILE = path.join(PATHS.graph, "render-settings.json
 
 /** The graph-family FORMAT STAMP sidecar (schema-versioning wave,
  *  2026-10-10): one version for the whole family — the four JSONL ledgers,
- *  sources.json, render-settings.json. LAZY v1: absent = v1; the first
+ *  sources.json, render-settings.json, groups.json. LAZY v1: absent = v1; the first
  *  graph-family write creates it. positions.json is REBUILDABLE and rides
  *  along unversioned by design (owner ruling). */
 export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");

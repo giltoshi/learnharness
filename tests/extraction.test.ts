@@ -112,6 +112,8 @@ function memoryLedgers() {
 		// Cluster labelings — mirrors the real store: append dedupes by id.
 		// The layout ledger — settleGraphLayout writes it after each merge.
 		readPositions: () => Object.fromEntries([...positions].map(([id, p]) => [id, { ...p }])),
+		readGroups: () => ({ groups: [], sessionGroups: {} }),
+		writeGroups: () => {},
 		writePositions: (next) => {
 			positions.clear();
 			for (const [id, p] of Object.entries(next)) positions.set(id, { x: p.x, y: p.y });

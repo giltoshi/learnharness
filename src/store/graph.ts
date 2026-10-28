@@ -34,11 +34,14 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
+import { GROUPS_FILE, LEDGER_FILES, POSITIONS_FILE, SOURCES_FILE } from "../../config.ts";
 import { assertGraphFormat, ensureGraphFormat } from "./graph-format.ts";
+import { emptyGroups } from "../core/groups.ts";
 import type {
 	GraphChain,
+	GraphGroup,
 	GraphNode,
+	GroupsState,
 	ExtractionRunUsage,
 	NotesSource,
 	Position,
@@ -193,6 +196,14 @@ export const graphStore: GraphStore = {
 		writePositionMap(positions);
 	},
 
+	// ── the session-groups file (config.GROUPS_FILE — a JSON file) ──
+	readGroups(): GroupsState {
+		return readGroupsFile();
+	},
+	writeGroups(state: GroupsState): void {
+		writeGroupsFile(state);
+	},
+
 	/** THE DESTRUCTIVE SEAM (wave 6 session deletion): atomic full-content
 	 *  replacement per provided ledger — write a uniquely-named temp file
 	 *  beside the ledger, then rename over it (POSIX-atomic: a crash mid-
@@ -279,6 +290,54 @@ function writePositionMap(positions: Record<string, Position>): void {
 
 const isPosition = (v: unknown): v is Position =>
 	isRecord(v) && typeof v.x === "number" && Number.isFinite(v.x) && typeof v.y === "number" && Number.isFinite(v.y);
+
+const isGroup = (v: unknown): v is GraphGroup =>
+	isRecord(v) && isString(v.id) && isString(v.name) && (v.parentGroupId === undefined || isString(v.parentGroupId));
+
+/** groups.json — { groups, sessionGroups }. Read-modify-write. Shape-guarded
+ *  like every graph-family read: junk entries are dropped, never guessed at;
+ *  a session entry pointing at an unknown group is dropped too. */
+function readGroupsFile(): GroupsState {
+	assertGraphFormat(); // honest refusal on a newer-stamped data dir
+	let raw: string;
+	try {
+		raw = fs.readFileSync(GROUPS_FILE, "utf-8");
+	} catch {
+		return emptyGroups();
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!isRecord(parsed)) return emptyGroups();
+		const groups = Array.isArray(parsed.groups) ? parsed.groups.filter(isGroup) : [];
+		const ids = new Set(groups.map((g) => g.id));
+		const sessionGroups: Record<string, string> = {};
+		if (isRecord(parsed.sessionGroups)) {
+			for (const [sessionId, groupId] of Object.entries(parsed.sessionGroups)) {
+				if (isString(groupId) && ids.has(groupId)) sessionGroups[sessionId] = groupId;
+			}
+		}
+		return { groups, sessionGroups };
+	} catch {
+		return emptyGroups();
+	}
+}
+
+function writeGroupsFile(state: GroupsState): void {
+	fs.mkdirSync(path.dirname(GROUPS_FILE), { recursive: true });
+	ensureGraphFormat(); // the lazy format stamp (graph-format.ts)
+	const tmp = `${GROUPS_FILE}.tmp-${crypto.randomUUID().slice(0, 8)}`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify(state, null, "\t"), "utf-8");
+		fs.renameSync(tmp, GROUPS_FILE);
+	} catch (err) {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* the rename either already happened or the tmp never existed */
+		}
+		throw err;
+	}
+}
 
 /** sources.json — { id: NotesSource }. Read-modify-write, NOT append-only:
  *  the usage log lives inside the record (like a chat's JSON file). */

@@ -16,6 +16,7 @@ import type {
 	ChatSummary,
 	GraphChain,
 	GraphNode,
+	GroupsState,
 	JobKind,
 	JobRecord,
 	ExtractionRunUsage,
@@ -111,6 +112,13 @@ export interface GraphStore {
 	readPositions(): Record<string, Position>;
 	/** Replace the whole ledger (the settle is a full-graph computation). */
 	writePositions(positions: Record<string, Position>): void;
+
+	/** The session-groups file (config.GROUPS_FILE — a JSON file, not a
+	 *  ledger): groups + session membership. Reads never write; an absent
+	 *  or corrupt file reads as empty. */
+	readGroups(): GroupsState;
+	/** Replace the whole file (atomic temp + rename). */
+	writeGroups(state: GroupsState): void;
 
 	/** THE DESTRUCTIVE SEAM (session-deletion wave 6, owner 2026-09-22 —
 	 *  the first non-append operation on these ledgers): atomically
