@@ -151,9 +151,11 @@ export function projectGroups(input: ProjectionInput, pos: (id: string) => { x: 
 			boxMembers.set(a, [...(boxMembers.get(a) ?? []), n.id]);
 		}
 	}
-	const levelOf = (groupId: string): number => {
-		const kids = input.groups.filter((g) => g.parentGroupId === groupId && boxMembers.has(g.id) && !input.collapsed.has(g.id));
-		return kids.length === 0 ? 0 : 1 + Math.max(...kids.map((k) => levelOf(k.id)));
+	// `visited` guards a parent cycle in bad data from recursing forever.
+	const levelOf = (groupId: string, visited: ReadonlySet<string> = new Set()): number => {
+		const seen = new Set(visited).add(groupId);
+		const kids = input.groups.filter((g) => g.parentGroupId === groupId && !seen.has(g.id) && boxMembers.has(g.id) && !input.collapsed.has(g.id));
+		return kids.length === 0 ? 0 : 1 + Math.max(...kids.map((k) => levelOf(k.id, seen)));
 	};
 	const groupBoxes: ProjectedGroupBox[] = input.groups
 		.filter((g) => boxMembers.has(g.id) && !input.collapsed.has(g.id))
