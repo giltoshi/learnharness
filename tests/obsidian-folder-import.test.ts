@@ -27,7 +27,7 @@ describe("multipartBody", () => {
 		const form = await new Request("http://x", {
 			method: "POST",
 			headers: { "Content-Type": "multipart/form-data; boundary=BND" },
-			body: multipartBody(notes, "BND"),
+			body: new Uint8Array(multipartBody(notes, "BND")),
 		}).formData();
 		const files = form.getAll("files") as File[];
 		assert.deepEqual(form.getAll("paths"), notes.map((n) => n.path));
