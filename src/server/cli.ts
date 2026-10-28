@@ -11,8 +11,9 @@ import { handleMcpMessage } from "../agent/cli/mcp-rpc.ts";
 import { runCliTurn } from "../agent/cli/runner.ts";
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import type { CliApprovalDecision, UsageSnapshot } from "../core/contracts.ts";
-import { getGraph } from "../core/graph.ts";
+import { getGraph, graphSessionIndex } from "../core/graph.ts";
 import { previewMerge } from "../core/graph-merge.ts";
+import { listGroupsOp, previewDeleteGroupOp } from "../core/group-ops.ts";
 import { settleGraphLayout } from "../core/layout-settle.ts";
 import { createApprovalBroker } from "./cli-approvals.ts";
 import { createTurnRegistry, startCliTurn } from "./cli-turn.ts";
@@ -25,12 +26,14 @@ const broker = createApprovalBroker();
 const registry = createTurnRegistry();
 const graphOps = createGraphOps({
 	graphStore: stores.graphStore,
+	chatStore: stores.chatStore,
 	state: stores.cliStateStore,
 	extractionBusy: () => extractionStatuses().length > 0,
 	revision: graphRevision,
 	settle: () => settleGraphLayout(stores.graphStore),
 });
 const workDir = path.join(PATHS.cli, "work");
+const groupDeps = { chatStore: stores.chatStore, graphStore: stores.graphStore };
 
 export const listCliChats = () => stores.cliChatStore.list();
 export const createCliChat = () => stores.cliChatStore.create();
@@ -87,6 +90,15 @@ export async function handleCliMcp(token: string, body: unknown): Promise<Record
 			return out;
 		},
 		requestApproval: (req) => broker.request(entry.chatId, req, entry.emit),
+		groups: () => stores.graphStore.readGroups(),
+		sessions: (groupId) => graphSessionIndex(groupDeps, groupId === undefined ? {} : { groupId }),
+		listGroups: () => listGroupsOp(groupDeps),
+		createGroup: (input) => graphOps.createGroup(input),
+		addSessionsToGroup: (groupId, ids) => graphOps.addSessionsToGroup(groupId, ids),
+		removeSessionsFromGroup: (ids) => graphOps.removeSessionsFromGroup(ids),
+		renameGroup: (groupId, name) => graphOps.renameGroup(groupId, name),
+		previewDeleteGroup: (groupId) => previewDeleteGroupOp(groupDeps, groupId).message,
+		deleteGroup: (groupId) => graphOps.deleteGroup(groupId),
 	});
 	return handleMcpMessage(body, entry.tools);
 }

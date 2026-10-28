@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import type { GraphChain, GraphNode, Position, CliWireEvent } from "../src/core/contracts.ts";
-import type { GraphStore } from "../src/core/ports.ts";
+import type { GraphChain, GraphNode, GroupsState, Position, CliWireEvent } from "../src/core/contracts.ts";
+import type { ChatStore, GraphStore } from "../src/core/ports.ts";
 import { createCliTools } from "../src/agent/cli/tools.ts";
 import { handleMcpMessage } from "../src/agent/cli/mcp-rpc.ts";
 import { previewMerge } from "../src/core/graph-merge.ts";
@@ -19,18 +19,20 @@ const node = (id: string, name: string): GraphNode => ({ id, name, statement: `$
 
 /** Runs one merge turn through the real stack; `approved` is the learner's answer to the card. */
 async function mergeTurn(approved: boolean) {
-	const s = { nodes: [node("n_a", "NPV rule"), node("n_b", "Net present value"), node("n_c", "WACC")], chains: [] as GraphChain[], coverage: [] as never[], checkpoints: [] as never[], positions: {} as Record<string, Position> };
+	const s = { nodes: [node("n_a", "NPV rule"), node("n_b", "Net present value"), node("n_c", "WACC")], chains: [] as GraphChain[], coverage: [] as never[], checkpoints: [] as never[], positions: {} as Record<string, Position>, groups: { groups: [], sessionGroups: {} } as GroupsState };
 	let revision = 1;
 	const graphStore = {
 		readNodes: () => s.nodes, readChains: () => s.chains, readCoverage: () => s.coverage, readCheckpoints: () => s.checkpoints, readPositions: () => s.positions,
 		writePositions: (p: Record<string, Position>) => { s.positions = p; revision++; },
 		rewriteLedgers: (n: Partial<typeof s>) => { Object.assign(s, n); revision++; },
+		readGroups: () => s.groups, writeGroups: (g: GroupsState) => { s.groups = g; revision++; },
 	} as unknown as GraphStore;
+	const chatStore = { listChats: () => [] } as unknown as ChatStore;
 	const chats = createCliChatStore(tmp());
 	const state = createCliStateStore(tmp());
 	const registry = createTurnRegistry();
 	const broker = createApprovalBroker(() => "ap-e2e");
-	const ops = createGraphOps({ graphStore, state, extractionBusy: () => false, revision: () => revision, settle: () => {}, now: () => new Date("2026-10-27T00:00:00.000Z") });
+	const ops = createGraphOps({ graphStore, chatStore, state,extractionBusy: () => false, revision: () => revision, settle: () => {}, now: () => new Date("2026-10-27T00:00:00.000Z") });
 	let toolOutput = "";
 
 	const run = (o: { mcpUrl: string }) => (async function* () {
@@ -40,6 +42,9 @@ async function mergeTurn(approved: boolean) {
 			renameChat: () => ({ ok: true, value: null }), previewMerge: (ids) => previewMerge(graphStore, ids),
 			mergeNodes: (i) => ops.mergeNodes(i), deleteNodes: (ids) => ops.deleteNodes(ids), deleteChats: async () => [],
 			requestApproval: (req) => broker.request(entry.chatId, req, entry.emit),
+			groups: () => s.groups, sessions: () => [], listGroups: () => [],
+			createGroup: (i) => ops.createGroup(i), addSessionsToGroup: (g, ids) => ops.addSessionsToGroup(g, ids), removeSessionsFromGroup: (ids) => ops.removeSessionsFromGroup(ids),
+			renameGroup: (g, name) => ops.renameGroup(g, name), previewDeleteGroup: () => "", deleteGroup: (g) => ops.deleteGroup(g),
 		});
 		yield { type: "tool-start", id: "t1", name: "merge_nodes", input: {} } as const;
 		const pending = handleMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "merge_nodes", arguments: { ids: ["n_a", "n_b"], name: "NPV", statement: "Net present value is the discounted sum of cash flows." } } }, tools);

@@ -1,13 +1,18 @@
 /**
- * The nine tools the Claude CLI may call. A factory: every effect (graph
- * reads, merge/delete, chat ops, approval) arrives through CliToolDeps, so
- * this layer never imports server or store (import law) and tests need no fs.
+ * The sixteen tools the Claude CLI may call. A factory: every effect (graph
+ * reads, merge/delete, chat ops, group ops, approval) arrives through
+ * CliToolDeps, so this layer never imports server or store (import law) and
+ * tests need no fs.
  *
- * Read tools and rename_chat run immediately; delete_nodes, merge_nodes and
- * delete_chats block on requestApproval and write nothing unless approved.
+ * Read tools, rename_chat and the group tools run immediately; delete_nodes,
+ * merge_nodes, delete_chats and delete_group block on requestApproval and
+ * write nothing unless approved.
  */
-import type { ChatSummary, CliApprovalDecision, CliApprovalRequest, CliOpResult, GraphChain, GraphNode } from "../../core/contracts.ts";
+import type { ChatSummary, CliApprovalDecision, CliApprovalRequest, CliOpResult, GraphChain, GraphNode, GroupsState } from "../../core/contracts.ts";
+import type { GraphSessionEntry } from "../../core/graph.ts";
 import type { MergeInput, MergePreview, MergeStats } from "../../core/graph-merge.ts";
+import { groupPathLabel, sessionIdsInGroup } from "../../core/groups.ts";
+import { birthSessionOf } from "../../core/session-clusters.ts";
 import type { CliTool, CliToolResult } from "./mcp-rpc.ts";
 
 export interface CliToolDeps {
@@ -20,9 +25,28 @@ export interface CliToolDeps {
 	deleteNodes(ids: string[]): CliOpResult<{ deleted: string[]; missing: string[]; chainsRemoved: number }>;
 	deleteChats(ids: string[], mode: "preserve-graph" | "delete-nodes"): Promise<Array<{ id: string; ok: boolean; message: string }>>;
 	requestApproval(req: CliApprovalRequest): Promise<CliApprovalDecision>;
+	groups(): GroupsState;
+	/** graphSessionIndex: sessions with their group; groupId filters deep (subgroups included). */
+	sessions(groupId?: string): GraphSessionEntry[];
+	listGroups(): Array<{ id: string; path: string; sessions: number; nodes: number }>;
+	createGroup(input: { name: string; parentGroupId?: string; sessionIds?: string[] }): CliOpResult<GroupChange>;
+	addSessionsToGroup(groupId: string, sessionIds: string[]): CliOpResult<GroupChange>;
+	removeSessionsFromGroup(sessionIds: string[]): CliOpResult<GroupChange>;
+	renameGroup(groupId: string, name: string): CliOpResult<GroupChange>;
+	previewDeleteGroup(groupId: string): string;
+	deleteGroup(groupId: string): CliOpResult<GroupChange>;
 }
 
-export const CLI_TOOL_NAMES = ["list_nodes", "search_nodes", "get_node", "list_chats", "get_chat", "rename_chat", "delete_nodes", "merge_nodes", "delete_chats"];
+/** A group op's count message; `changed` = an undo point was recorded. */
+export interface GroupChange {
+	message: string;
+	changed: boolean;
+}
+
+export const CLI_TOOL_NAMES = [
+	"list_nodes", "search_nodes", "get_node", "list_chats", "get_chat", "rename_chat", "delete_nodes", "merge_nodes", "delete_chats",
+	"list_sessions", "list_groups", "create_group", "add_sessions_to_group", "remove_sessions_from_group", "rename_group", "delete_group",
+];
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -37,20 +61,41 @@ const REJECTED = "The learner rejected this action in the approval card. Nothing
 
 export function createCliTools(d: CliToolDeps): CliTool[] {
 	const nodeLine = (n: GraphNode) => `${n.id} | ${n.name}`;
+	/** The node's group path (through its birth session), or null when ungrouped. */
+	const groupOf = (n: GraphNode, groups: GroupsState): string | null => {
+		const session = birthSessionOf(n);
+		const groupId = session === null ? undefined : groups.sessionGroups[session];
+		return groupId === undefined ? null : groupPathLabel(groups.groups, groupId);
+	};
+	const unknownGroup = (id: string) => fail(`No group "${id}". Call list_groups for the current ids.`);
+	const groupResult = (r: CliOpResult<GroupChange>): CliToolResult =>
+		!r.ok ? fail(r.error) : ok(r.value.changed ? `${r.value.message} The learner can undo this from the chat.` : r.value.message);
 	const chainsTouching = (id: string, chains: GraphChain[]) => new Set(chains.filter((c) => c.conclusion === id || c.premises.includes(id)).map((c) => c.id)).size;
 
 	const tools: CliTool[] = [
 		{
 			name: "list_nodes",
-			description: "List knowledge-graph nodes (id | name). Optional: limit (default 100), offset, chatId (only nodes that chat touched).",
-			inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "number" }, chatId: { type: "string" } } },
+			description: "List knowledge-graph nodes (id | name, plus | group: path when the node's session is grouped). Optional: limit (default 100), offset, chatId (only nodes that chat touched), groupId (only nodes born in a session of that group or its subgroups).",
+			inputSchema: { type: "object", properties: { limit: { type: "number" }, offset: { type: "number" }, chatId: { type: "string" }, groupId: { type: "string" } } },
 			async run(a) {
 				const chatId = str(a.chatId);
-				const all = d.graph().nodes.filter((n) => chatId === "" || n.provenance.some((p) => p.chatId === chatId));
+				const groupId = str(a.groupId);
+				const groups = d.groups();
+				if (groupId !== "" && !groups.groups.some((g) => g.id === groupId)) return unknownGroup(groupId);
+				const inGroup = groupId === "" ? null : new Set(sessionIdsInGroup(groups, groupId));
+				const all = d.graph().nodes.filter((n) => {
+					if (chatId !== "" && !n.provenance.some((p) => p.chatId === chatId)) return false;
+					const session = birthSessionOf(n);
+					return inGroup === null || (session !== null && inGroup.has(session));
+				});
 				const limit = Math.min(num(a.limit, 100), MAX_LIMIT);
 				const offset = num(a.offset, 0);
 				const page = all.slice(offset, offset + limit);
-				return ok(`${plural(all.length, "node")}${all.length > page.length ? ` (showing ${page.length} from ${offset})` : ""}\n${page.map(nodeLine).join("\n")}`);
+				const line = (n: GraphNode) => {
+					const path = groupOf(n, groups);
+					return path === null ? nodeLine(n) : `${nodeLine(n)} | group: ${path}`;
+				};
+				return ok(`${plural(all.length, "node")}${all.length > page.length ? ` (showing ${page.length} from ${offset})` : ""}\n${page.map(line).join("\n")}`);
 			},
 		},
 		{
@@ -69,7 +114,7 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 		},
 		{
 			name: "get_node",
-			description: "Full detail for one node: statement, aliases, the chats it came from, and its reasoning chains.",
+			description: "Full detail for one node: statement, aliases, the chats it came from, its group, and its reasoning chains.",
 			inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
 			async run(a) {
 				const { nodes, chains } = d.graph();
@@ -86,6 +131,7 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 					`Statement: ${node.statement}`,
 					`Aliases: ${node.aliases.length ? node.aliases.join(" / ") : "(none)"}`,
 					`From: ${sources.length ? sources.join(", ") : "(none)"}`,
+					`Group: ${groupOf(node, d.groups()) ?? "(none)"}`,
 					`Chains (${plural(mine.length, "chain")}):`,
 					...chainLines,
 				].join("\n"));
@@ -190,6 +236,82 @@ export function createCliTools(d: CliToolDeps): CliTool[] {
 				if (!decision.approved) return fail(REJECTED);
 				const results = await d.deleteChats(ids, mode);
 				return results.some((r) => !r.ok) ? { text: results.map((r) => `${r.id}: ${r.message}`).join("\n"), isError: true } : ok(results.map((r) => `${r.id}: ${r.message}`).join("\n"));
+			},
+		},
+		{
+			name: "list_sessions",
+			description: "List the sessions that produced graph nodes — chats and imported notes files (id | name | kind | group | node count). Session ids are what the group tools take. Optional groupId: only sessions in that group or its subgroups.",
+			inputSchema: { type: "object", properties: { groupId: { type: "string" } } },
+			async run(a) {
+				const groupId = str(a.groupId);
+				if (groupId !== "" && !d.groups().groups.some((g) => g.id === groupId)) return unknownGroup(groupId);
+				const sessions = d.sessions(groupId === "" ? undefined : groupId);
+				return ok(`${plural(sessions.length, "session")}\n${sessions.map((s) => `${s.id} | ${s.name} | ${s.kind} | ${s.groupName ?? "(ungrouped)"} | ${plural(s.propositions, "node")}`).join("\n")}`);
+			},
+		},
+		{
+			name: "list_groups",
+			description: "List the knowledge map's groups (id | path | session count | node count, subgroups included).",
+			inputSchema: { type: "object", properties: {} },
+			async run() {
+				const groups = d.listGroups();
+				if (groups.length === 0) return ok("There are no groups yet.");
+				return ok(groups.map((g) => `${g.id} | ${g.path} | ${plural(g.sessions, "session")} | ${plural(g.nodes, "node")}`).join("\n"));
+			},
+		},
+		{
+			name: "create_group",
+			description: "Create a named group on the learner's knowledge map, optionally nested under another group (parentGroupId) and optionally filled with sessions (ids from list_sessions). A group holds whole sessions — e.g. all the chapters of one course; nodes and chains are never changed. Runs immediately; can be undone from the chat.",
+			inputSchema: { type: "object", properties: { name: { type: "string" }, parentGroupId: { type: "string" }, sessionIds: { type: "array", items: { type: "string" } } }, required: ["name"] },
+			async run(a) {
+				const parentGroupId = str(a.parentGroupId);
+				const sessionIds = [...new Set(strList(a.sessionIds))];
+				return groupResult(d.createGroup({ name: str(a.name), ...(parentGroupId !== "" ? { parentGroupId } : {}), ...(sessionIds.length > 0 ? { sessionIds } : {}) }));
+			},
+		},
+		{
+			name: "add_sessions_to_group",
+			description: "Move sessions (ids from list_sessions) into a group, including sessions already in another group (they leave it). Nodes and chains are never changed. Runs immediately; can be undone from the chat.",
+			inputSchema: { type: "object", properties: { groupId: { type: "string" }, sessionIds: { type: "array", items: { type: "string" } } }, required: ["groupId", "sessionIds"] },
+			async run(a) {
+				const groupId = str(a.groupId);
+				const sessionIds = [...new Set(strList(a.sessionIds))];
+				if (groupId === "") return fail("groupId is required");
+				if (sessionIds.length === 0) return fail("sessionIds is required");
+				return groupResult(d.addSessionsToGroup(groupId, sessionIds));
+			},
+		},
+		{
+			name: "remove_sessions_from_group",
+			description: "Take sessions out of whatever group they are in (they become ungrouped). Nodes and chains are never changed. Runs immediately; can be undone from the chat.",
+			inputSchema: { type: "object", properties: { sessionIds: { type: "array", items: { type: "string" } } }, required: ["sessionIds"] },
+			async run(a) {
+				const sessionIds = [...new Set(strList(a.sessionIds))];
+				if (sessionIds.length === 0) return fail("sessionIds is required");
+				return groupResult(d.removeSessionsFromGroup(sessionIds));
+			},
+		},
+		{
+			name: "rename_group",
+			description: "Rename a group. Runs immediately; can be undone from the chat.",
+			inputSchema: { type: "object", properties: { groupId: { type: "string" }, name: { type: "string" } }, required: ["groupId", "name"] },
+			async run(a) {
+				const groupId = str(a.groupId);
+				if (groupId === "") return fail("groupId is required");
+				return groupResult(d.renameGroup(groupId, str(a.name)));
+			},
+		},
+		{
+			name: "delete_group",
+			description: "Delete a group. Its subgroups and sessions move up to its parent (or become ungrouped); nodes and chains are never changed. Requires the learner's approval; can be undone from the chat.",
+			inputSchema: { type: "object", properties: { groupId: { type: "string" } }, required: ["groupId"] },
+			async run(a) {
+				const groupId = str(a.groupId);
+				const group = d.groups().groups.find((g) => g.id === groupId);
+				if (!group) return unknownGroup(groupId);
+				const decision = await d.requestApproval({ tool: "delete_group", title: `Delete group "${group.name}"?`, lines: [d.previewDeleteGroup(groupId)] });
+				if (!decision.approved) return fail(REJECTED);
+				return groupResult(d.deleteGroup(groupId));
 			},
 		},
 	];
