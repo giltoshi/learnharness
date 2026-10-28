@@ -32,7 +32,7 @@ const MAX_CHAINS = 50;
 const fail = (text: string): CliToolResult => ({ text, isError: true });
 const ok = (text: string): CliToolResult => ({ text });
 const clip = (s: string, n = 160): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : word.endsWith("ch") ? "es" : "s"}`;
 const REJECTED = "The learner rejected this action in the approval card. Nothing was changed. Do not retry the same action; ask what they would like instead.";
 
 export function createCliTools(d: CliToolDeps): CliTool[] {
