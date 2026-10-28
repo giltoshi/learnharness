@@ -46,6 +46,19 @@ describe("createGroupOp", () => {
 	});
 });
 
+describe("same-value updates write nothing", () => {
+	it("renaming to the same name or re-parenting to the same parent does not write", () => {
+		const a = createGroupOp(deps, { name: "A" }).groupId;
+		writes = 0;
+		assert.equal(renameGroupOp(deps, a, " A ").message, "Nothing to change.");
+		assert.equal(setGroupParentOp(deps, a, null).message, "Nothing to change.");
+		assert.equal(writes, 0);
+	});
+	it("an unknown group is refused even for a parent-only change", () => {
+		assert.throws(() => setGroupParentOp(deps, "grp_nope", null), (e) => e instanceof GroupError && e.code === "unknown_group");
+	});
+});
+
 describe("move / remove / rename / parent", () => {
 	it("moves between groups and reports unchanged", () => {
 		const a = createGroupOp(deps, { name: "A" }).groupId;

@@ -157,6 +157,16 @@ describe("graph ops", () => {
 		assert.ok(rm.ok && !rm.value.changed);
 		assert.equal(t.getUndo(), null);
 	});
+	it("a no-op rename or remove keeps a pending undo point undoable", () => {
+		const t = setup();
+		assert.ok(t.ops.createGroup({ name: "FINA" }).ok);
+		const id = t.s.groups.groups[0]!.id;
+		const label = t.getUndo()?.label;
+		assert.ok(t.ops.renameGroup(id, " FINA ").ok);
+		assert.ok(t.ops.removeSessionsFromGroup(["c1"]).ok);
+		assert.equal(t.getUndo()?.label, label);
+		assert.ok(t.ops.undoInfo(), "the pending undo point is still valid");
+	});
 	it("maps GroupError to { ok:false, code, error } and writes nothing", () => {
 		const t = setup();
 		const r = t.ops.addSessionsToGroup("grp_nope", ["c1"]);

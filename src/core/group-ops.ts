@@ -116,12 +116,16 @@ export function updateGroupOp(
 	const before = deps.graphStore.readGroups();
 	let state = before;
 	const messages: string[] = [];
+	// A same-value change writes nothing: a groups.json write moves
+	// graphRevision, which would silently stale a pending CLI undo point.
+	const current = before.groups.find((g) => g.id === groupId);
+	if (!current) throw new GroupError("unknown_group", `No group "${groupId}".`);
 	if (change.name !== undefined) {
 		const clean = cleanGroupName(change.name);
 		state = renameGroup(state, groupId, clean);
-		messages.push(renamedMessage(nameOf(before.groups, groupId), clean));
+		if (clean !== current?.name) messages.push(renamedMessage(nameOf(before.groups, groupId), clean));
 	}
-	if (change.parentGroupId !== undefined) {
+	if (change.parentGroupId !== undefined && change.parentGroupId !== (current?.parentGroupId ?? null)) {
 		state = setGroupParent(state, groupId, change.parentGroupId);
 		const parentName = change.parentGroupId === null ? null : nameOf(before.groups, change.parentGroupId);
 		messages.push(reparentedMessage(nameOf(state.groups, groupId), parentName));
