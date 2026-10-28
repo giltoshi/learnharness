@@ -14,8 +14,8 @@ Let the learner group birth-session clusters (one per chat or imported notes fil
 4. Graph view: collapse and expand in place, with chains bundled to the blob edge and cross-group chains still visible.
 5. No undo stack. Every group operation is reversible by its inverse operation, and tools return enough information to reverse it.
 6. Deleting a group re-parents its subgroups and directly-held sessions to its parent group (ungrouped if it has none).
-7. `delete_group` is a code-enforced two-step: the first call previews and returns a one-time token, and the group is deleted only when the call is repeated with that token.
-8. The group tools live on the teacher, behind the graph-tools gate.
+7. `delete_group` waits for the learner's approval card in the Claude CLI chat; every other group tool runs immediately.
+8. The group tools live in the Claude CLI chat's MCP server (merged from `feat/claude-code-engine`), not on the teacher. Every group change records the CLI's single undo point; `groups.json` is part of the undo snapshot, so undoing a merge also restores groups. `list_nodes` gains a deep `groupId` filter and a group label, `get_node` shows the group, and `list_sessions` lists sessions with their group. A same-value group change writes nothing, so it never stales a pending undo.
 9. Group management is a Groups panel (create, rename, move, delete).
 10. The node-level `list_nodes`/`get_node` of the original request are replaced by the session-level read tools (`list_sessions`, `list_propositions`), which gain a group filter and a group label.
 11. A group's label is its name; there is no auto-naming. Groups start expanded on load, and collapse state is not persisted.
@@ -23,7 +23,7 @@ Let the learner group birth-session clusters (one per chat or imported notes fil
 13. Any `groups.json` write raises the `format.json` stamp to v2; other writers keep stamping lazily. Older builds therefore refuse the data only once groups exist.
 14. `PATCH` on a group is atomic: rename and re-parent happen in one write. Add/remove operations skip the write when nothing changed.
 15. Folder import accepts `.md`, `.markdown` and `.txt`, and skips hidden files and hidden directories (e.g. `.obsidian`). Bare-name matching reuses an existing source; re-dropping a folder reuses its groups.
-16. The teacher prompt was intentionally not edited; prompt wording is reserved for the owner, and the tool descriptions carry the guidance instead.
+16. No agent prompt text (teacher or CLI system prompt) was edited; prompt wording is reserved for the owner, and the tool descriptions carry the guidance instead.
 
 ## 1. Data
 
@@ -50,7 +50,7 @@ Registered alongside the existing graph tools in `src/agent/tools/graph.ts`, beh
 - `add_sessions_to_group(groupId, sessionIds[])` moves sessions, including ones already in another group.
 - `remove_sessions_from_group(sessionIds[])`
 - `rename_group(groupId, name)`
-- `delete_group(groupId)` removes the group and re-parents its subgroups and sessions to its parent (decision 6); two-step with a one-time token (decision 7).
+- `delete_group(groupId)` removes the group and re-parents its subgroups and sessions to its parent (decision 6); needs the learner's approval card (decision 7).
 - `list_groups()` returns `id | name | parent | session count | node count`.
 - `list_sessions` and `list_propositions` gain an optional `groupId` filter, and `list_sessions` output shows each session's group. This replaces the spec's node-level `list_nodes` and `get_node`, which do not exist in this app.
 - Mutating tools return counts, e.g. "moved 12 sessions (340 nodes) into 'Risk & Return', 0 chains affected".
@@ -65,3 +65,7 @@ Registered alongside the existing graph tools in `src/agent/tools/graph.ts`, beh
 ## Testing
 
 Unit tests for group mutations (cycle rejection, move, delete re-parents, session deletion cleanup), folder-path-to-group derivation, bare-name matching, and tool output counts. Existing graph, layout and golden-fixture tests must stay green, since grouping must not alter node or chain data.
+
+## Obsidian plugin
+
+Right-click a vault folder → "Import into LearnHarness as a group" sends its `.md`/`.markdown`/`.txt` files (dot-segments skipped) with relative paths rooted at the folder name to `POST /api/graph/import`, so the folder becomes a group tree. The vault root is not offered.
